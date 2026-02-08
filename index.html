@@ -1,90 +1,145 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SF Deployment Ops Dashboard</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <style>
-        :root { --primary: #10ad9d; --card-bg: #ffffff; }
-        body { background-color: #f0f2f5; }
-        .row-click { cursor: pointer; transition: background 0.2s; }
-        .row-click:hover { background: rgba(16, 173, 157, 0.1); }
-        .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
-        .stat-card { background: var(--card-bg); padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center; }
-        .stat-card h4 { margin: 0; color: var(--primary); font-size: 1.8rem; }
-        .stat-card span { font-size: 0.8rem; text-transform: uppercase; color: #666; font-weight: bold; }
-        .chart-container { background: white; padding: 1rem; border-radius: 8px; margin-bottom: 2rem; box-shadow: 0 2px 4px rgba(0,0,0,0.05); height: 300px; }
-        .comparison-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem; }
-        .insight-pill { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 12px; font-size: 0.75rem; margin-right: 0.5rem; background: #e0f2f1; color: #00796b; border: 1px solid #b2dfdb; }
-        .risk-high { color: #d32f2f; font-weight: bold; }
-        #logPre { background: #1a1c1e; color: #adbac7; font-size: 0.75rem; border-radius: 8px; max-height: 150px; }
-    </style>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SF Deployment Center Pro</title>
+
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/@picocss/pico@1/css/pico.min.css"
+  />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <style>
+    :root { --primary: #10ad9d; --bg: #f8fafc; }
+    body { background: var(--bg); font-size: 14px; }
+
+    .grid-main {
+      display: grid;
+      grid-template-columns: 350px 1fr;
+      gap: 1.5rem;
+    }
+
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    .status-badge {
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 0.7rem;
+      font-weight: bold;
+    }
+
+    .status-Succeeded { background: #dcfce7; color: #166534; }
+    .status-Failed { background: #fee2e2; color: #991b1b; }
+    .status-InProgress {
+      background: #fef9c3;
+      color: #854d0e;
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.6; }
+    }
+
+    .chart-container {
+      height: 200px;
+      background: white;
+      padding: 1rem;
+      border-radius: 8px;
+      margin-bottom: 1rem;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+
+    .dep-card {
+      background: white;
+      border: 1px solid #e2e8f0;
+      padding: 0.75rem;
+      border-radius: 6px;
+      margin-bottom: 0.5rem;
+    }
+
+    .test-fail { border-left: 4px solid #ef4444; }
+
+    .filter-bar {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 1rem;
+      background: #fff;
+      padding: 10px;
+      border-radius: 8px;
+    }
+  </style>
 </head>
+
 <body class="container-fluid">
-    <header style="padding: 1rem 0;">
-        <div class="container">
-            <nav>
-                <ul><li><strong>SF Deployment Ops</strong></li></ul>
-                <ul>
-                    <li><small id="orgPill" class="insight-pill">Disconnected</small></li>
-                    <li><button id="loginBtn" class="outline">Login</button></li>
-                    <li><button id="logoutBtn" class="outline secondary">Logout</button></li>
-                </ul>
-            </nav>
+<header>
+  <nav>
+    <ul>
+      <li><strong>🚀 Deployment Ops</strong></li>
+    </ul>
+    <ul>
+      <li>
+        <button onclick="requestNotifyPermission()" class="outline secondary" style="font-size:12px;">
+          🔔 Enable Alerts
+        </button>
+      </li>
+      <li>
+        <button onclick="exportToCSV()" class="secondary">
+          📥 Export CSV
+        </button>
+      </li>
+    </ul>
+  </nav>
+</header>
+
+<div class="filter-bar">
+  <small>Filter Range:</small>
+  <input type="date" id="filterStart" style="margin:0; font-size:12px;">
+  <input type="date" id="filterEnd" style="margin:0; font-size:12px;">
+  <button onclick="loadRecent()" style="margin:0; padding:5px 15px;">
+    Apply
+  </button>
+</div>
+
+<main class="grid-main">
+  <aside>
+    <article style="padding:1rem;">
+      <h6>Live Monitor</h6>
+      <div id="liveMonitorList"><small>No active jobs...</small></div>
+
+      <hr>
+
+      <h6>Recent History</h6>
+      <table role="grid">
+        <tbody id="deploymentsTbody"></tbody>
+      </table>
+    </article>
+  </aside>
+
+  <section>
+    <div class="chart-container">
+      <canvas id="trendChart"></canvas>
+    </div>
+
+    <div id="detailsPanel" style="display:none">
+      <div class="grid">
+        <div>
+          <h6>Component & Test Failures</h6>
+          <div id="dependencyMap"></div>
         </div>
-    </header>
-
-    <main class="container">
-        <div class="chart-container">
-            <canvas id="trendChart"></canvas>
+        <div>
+          <h6>Risk Insights</h6>
+          <div id="insightList"></div>
         </div>
+      </div>
+    </div>
+  </section>
+</main>
 
-        <div class="grid">
-            <section>
-                <article>
-                    <header>Recent Deployments</header>
-                    <table role="grid">
-                        <thead>
-                            <tr>
-                                <th>Status</th>
-                                <th>Duration</th>
-                                <th>Queue</th>
-                                <th>Compare</th>
-                            </tr>
-                        </thead>
-                        <tbody id="deploymentsTbody"></tbody>
-                    </table>
-                </article>
-            </section>
-
-            <section id="detailsPanel" style="display:none;">
-                <div class="stats-grid">
-                    <div class="stat-card"><span id="compTotal">0</span><span>Components</span></div>
-                    <div class="stat-card"><h4 id="runTimeLabel">0s</h4><span>Execution</span></div>
-                    <div class="stat-card"><span id="concurrentJobs">0</span><span>Concurrent Jobs</span></div>
-                </div>
-
-                <div id="insightList"></div>
-
-                <article id="comparisonSection" style="display:none; border-top: 3px solid var(--primary);">
-                    <header>Side-by-Side Comparison</header>
-                    <div class="comparison-grid" id="compareContent"></div>
-                </article>
-
-                <article>
-                    <header>Apex Test Risks</header>
-                    <div id="testHeatmap"></div>
-                </article>
-            </section>
-        </div>
-    </main>
-
-    <footer class="container">
-        <pre id="logPre"></pre>
-    </footer>
-
-    <script src="app.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
