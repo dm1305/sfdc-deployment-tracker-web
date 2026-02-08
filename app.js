@@ -451,4 +451,681 @@ function statusClass(status) {
   const s = String(status || "").toLowerCase();
   if (["succeeded", "success", "completed"].some((k) => s.includes(k))) return "good";
   if (["failed", "error"].some((k) => s.includes(k))) return "bad";
-  if (["inprogress", "in progress", "queued", "pending"]()
+  if (["inprogress", "in progress", "queued", "pending", "validat", "running", "processing"].some((k) => s.includes(k)))
+    return "warn";
+  return "warn";
+}
+
+function passesDeployFilter(r) {
+  const filter = $("deployFilter")?.value || "all";
+  const status = String(r.Status || "");
+  const checkOnly = !!r.CheckOnly;
+
+  if (filter === "active") {
+    const active = ["InProgress", "Pending", "Queued", "Processing", "Running", "Validating"];
+    return active.includes(status);
+  }
+  if (filter === "failed") return status.toLowerCase().includes("fail") || status.toLowerCase().includes("error");
+  if (filter === "checkonly") return checkOnly;
+  if (filter === "real") return !checkOnly;
+  return true;
+}
+
+function passesDeploySearch(r) {
+  const q = ($("deploySearch")?.value || "").trim().toLowerCase();
+  if (!q) return true;
+  const blob = [
+    r.Status,
+    r.Type,
+    r.CreatedBy?.Name,
+    r.ErrorStatusCode,
+    r.ErrorMessage,
+    r.Id,
+  ].filter(Boolean).join(" ").toLowerCase();
+  return blob.includes(q);
+}
+
+function correlationBadge(c) {
+  if (!c) return `<span class="badge muted">Unknown</span>`;
+  const conf = c.confidence || "Low";
+  const out = c.outcome || "Unknown";
+  const cls =
+    /fail/i.test(out) ? "bad" :
+    /pass|succeed/i.test(out) ? "good" :
+    "warn";
+  return `<span class="badge"><span class="status ${cls}">${out}</span><span class="muted">(${conf})</span></span>`;
+}
+
+function fmtInt(n) {
+  if (n == null || n === "") return "—";
+  if (!Number.isFinite(Number(n))) return String(n);
+  return String(n);
+}
+
+function renderDeploymentsTable(rows) {
+  const tbody = $("deploymentsTbody");
+  if (!tbody) return;
+
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td class="muted small" colspan="14">No deployments match the current filter/search.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = rows.map((r) => {
+    const now = new Date();
+    const created = parseDate(r.CreatedDate);
+    const started = parseDate(r.StartDate) || created;
+    const completed = parseDate(r.CompletedDate);
+
+    const queueMs = created && started ? started - created : null;
+    const runMs = started ? (completed ? completed - started : now - started) : null;
+    const totalMs = created ? (completed ? completed - created : now - created) : null;
+
+    const st = r.Status || "—";
+    const stClass = statusClass(st);
+
+    const type = r.Type || "—";
+    const user = r.CreatedBy?.Name || "—";
+
+    const corr = deployToTest.get(r.Id) || null;
+    const testFails = corr?.failures ?? null;
+    const testMs = corr?.durationMs ?? null;
+
+    return `
+      <tr>
+        <td class="status ${stClass}">${st}</td>
+        <td>${user}</td>
+        <td>${type}${r.CheckOnly ? ' <span class="muted">(checkOnly)</span>' : ""}</td>
+        <td class="mono">${fmtTime(created)}</td>
+        <td class="mono">${fmtTime(parseDate(r.StartDate))}</td>
+        <td class="mono">${fmtTime(completed)}</td>
+        <td class="mono">${fmtDuration(queueMs)}</td>
+        <td class="mono">${fmtDuration(runMs)}</td>
+        <td class="mono">${fmtDuration(totalMs)}</td>
+        <td>${correlationBadge(corr)}</td>
+        <td class="mono">${fmtInt(testFails)}</td>
+        <td class="mono">${fmtDuration(testMs)}</td>
+        <td class="mono">${r.Id}</td>
+        <td>
+          <div class="rowActions">
+            <button class="btnSmall" data-action="selectDeploy" data-id="${r.Id}">Details</button>
+            <button class="btnSmall" data-action="copy" data-text="${r.Id}">Copy id</button>
+            ${corr?.runId ? `<button class="btnSmall" data-action="selectTestRun" data-id="${corr.runId}">Test run</button>` : ""}
+          </div>
+        </td>
+      </tr>
+    `.trim();
+  }).join("\n");
+
+  // Event delegation
+  tbody.querySelectorAll("button[data-action]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const action = btn.getAttribute("data-action");
+      const id = btn.getAttribute("data-id");
+      const text = btn.getAttribute("data-text");
+
+      if (action === "selectDeploy") {
+        const rec = rows.find((x) => x.Id === id);
+        if (!rec) return;
+
+        setSelected({
+          kind: "DeployRequest",
+          Id: rec.Id,
+          Status: rec.Status,
+          Type: rec.Type,
+          CheckOnly: rec.CheckOnly,
+          CreatedBy: rec.CreatedBy?.Name,
+          CreatedDate: rec.CreatedDate,
+          StartDate: rec.StartDate,
+          CompletedDate: rec.CompletedDate,
+          ErrorStatusCode: rec.ErrorStatusCode,
+          ErrorMessage: rec.ErrorMessage,
+          CorrelatedTest: deployToTest.get(rec.Id) || null,
+        });
+        return;
+      }
+
+      if (action === "copy") {
+        try {
+          await navigator.clipboard.writeText(text || "");
+          log("Copied to clipboard.");
+        } catch {
+          log("Clipboard copy failed (browser permissions).");
+        }
+        return;
+      }
+
+      if (action === "selectTestRun") {
+        showTab("tests");
+        await refreshTests(false);
+        await selectTestRunAndFailures(id);
+      }
+    });
+  });
+}
+
+async function fetchDeployments() {
+  const limit = Number($("deployLimit")?.value || 20);
+
+  const soql = `
+    SELECT Id, Status, Type, CheckOnly,
+           CreatedDate, StartDate, CompletedDate,
+           CreatedBy.Name, CreatedById,
+           ErrorStatusCode, ErrorMessage
+    FROM DeployRequest
+    ORDER BY CreatedDate DESC
+    LIMIT ${limit}
+  `.trim();
+
+  setBusy(true, "Deploys…");
+  const { ok, status, json } = await sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
+  setBusy(false);
+
+  if (!ok) {
+    const msg = extractSfError(json);
+    setSelected(`DeployRequest query failed (HTTP ${status}):\n${msg}`);
+    return [];
+  }
+
+  const recs = json?.records || [];
+  lastDeployments = recs;
+
+  // Ensure tests are cached (for correlation)
+  if (!lastTestRuns.length) {
+    await refreshTests(true);
+  }
+
+  correlateDeploymentsToTests(recs, lastTestRuns);
+
+  const filtered = recs.filter(passesDeployFilter).filter(passesDeploySearch);
+  renderDeploymentsTable(filtered);
+  return filtered;
+}
+
+/* -------------------- Apex Tests -------------------- */
+
+function passesTestFilter(r) {
+  const f = $("testFilter")?.value || "all";
+  const outcome = String(r.Outcome || r.Status || "").toLowerCase();
+  if (f === "failed") return /(fail|error)/i.test(outcome) || Number(r.Failures || 0) > 0;
+  if (f === "passed") return /(pass|success)/i.test(outcome) && Number(r.Failures || 0) === 0;
+  return true;
+}
+
+function passesTestSearch(r) {
+  const q = ($("testSearch")?.value || "").trim().toLowerCase();
+  if (!q) return true;
+  const blob = [r.Id, r.Outcome, r.Status, r.CreatedBy?.Name].filter(Boolean).join(" ").toLowerCase();
+  return blob.includes(q);
+}
+
+function testOutcomeClass(outcome) {
+  const s = String(outcome || "").toLowerCase();
+  if (/(pass|success)/i.test(s)) return "good";
+  if (/(fail|error)/i.test(s)) return "bad";
+  return "warn";
+}
+
+function renderTestsTable(rows) {
+  const tbody = $("testsTbody");
+  if (!tbody) return;
+
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td class="muted small" colspan="9">No test runs match the current filter/search.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = rows.map((r) => {
+    const started = parseDate(r.StartTime);
+    const ended = parseDate(r.EndTime);
+    const dur = started ? ((ended ? ended - started : new Date() - started)) : null;
+    const outcome = r.Outcome || r.Status || "—";
+    const cls = testOutcomeClass(outcome);
+
+    return `
+      <tr>
+        <td class="status ${cls}">${outcome}</td>
+        <td>${r.CreatedBy?.Name || "—"}</td>
+        <td class="mono">${fmtTime(started)}</td>
+        <td class="mono">${fmtTime(ended)}</td>
+        <td class="mono">${fmtDuration(dur)}</td>
+        <td class="mono">${fmtInt(r.TestsRan)}</td>
+        <td class="mono">${fmtInt(r.Failures)}</td>
+        <td class="mono">${r.Id}</td>
+        <td>
+          <div class="rowActions">
+            <button class="btnSmall" data-action="selectRun" data-id="${r.Id}">Details</button>
+            <button class="btnSmall" data-action="loadFailures" data-id="${r.Id}">Failures</button>
+            <button class="btnSmall" data-action="copy" data-text="${r.Id}">Copy</button>
+          </div>
+        </td>
+      </tr>
+    `.trim();
+  }).join("\n");
+
+  tbody.querySelectorAll("button[data-action]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const action = btn.getAttribute("data-action");
+      const id = btn.getAttribute("data-id");
+      const text = btn.getAttribute("data-text");
+
+      if (action === "copy") {
+        try {
+          await navigator.clipboard.writeText(text || "");
+          log("Copied to clipboard.");
+        } catch {
+          log("Clipboard copy failed.");
+        }
+        return;
+      }
+
+      if (action === "selectRun") {
+        const rec = rows.find((x) => x.Id === id);
+        if (!rec) return;
+        setSelected({ kind: "ApexTestRun", ...rec });
+        return;
+      }
+
+      if (action === "loadFailures") {
+        await selectTestRunAndFailures(id);
+      }
+    });
+  });
+}
+
+async function refreshTests(silent = false) {
+  const limit = Number($("testLimit")?.value || 20);
+
+  const soql = `
+    SELECT Id, Status, Outcome, StartTime, EndTime, TestsRan, Failures,
+           CreatedBy.Name, CreatedById
+    FROM ApexTestRun
+    ORDER BY StartTime DESC
+    LIMIT ${limit}
+  `.trim();
+
+  if (!silent) setBusy(true, "Tests…");
+  const { ok, status, json } = await sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
+  if (!silent) setBusy(false);
+
+  if (!ok) {
+    const msg = extractSfError(json);
+    if (!silent) setSelected(`ApexTestRun query failed (HTTP ${status}):\n${msg}`);
+    return [];
+  }
+
+  const recs = json?.records || [];
+  lastTestRuns = recs;
+
+  // re-run correlation if deployments already loaded
+  if (lastDeployments.length) {
+    correlateDeploymentsToTests(lastDeployments, lastTestRuns);
+    if ($("tabDeployments")?.classList.contains("active")) {
+      const filtered = lastDeployments.filter(passesDeployFilter).filter(passesDeploySearch);
+      renderDeploymentsTable(filtered);
+    }
+  }
+
+  const filtered = recs.filter(passesTestFilter).filter(passesTestSearch);
+  if (!silent) renderTestsTable(filtered);
+
+  return filtered;
+}
+
+async function selectTestRunAndFailures(runId) {
+  const run = lastTestRuns.find((x) => x.Id === runId) || { Id: runId };
+  setSelected({ kind: "ApexTestRun", ...run, loadingFailures: true });
+
+  const soql = `
+    SELECT Id, Outcome, ApexClass.Name, MethodName, Message, StackTrace, RunTime
+    FROM ApexTestResult
+    WHERE ApexTestRunId = '${runId}'
+    AND (Outcome != 'Pass' OR Message != null)
+    ORDER BY RunTime DESC
+    LIMIT 50
+  `.trim();
+
+  setBusy(true, "Failures…");
+  const { ok, status, json } = await sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
+  setBusy(false);
+
+  if (!ok) {
+    const msg = extractSfError(json);
+    setSelected(`ApexTestResult query failed (HTTP ${status}):\n${msg}`);
+    return;
+  }
+
+  const failures = json?.records || [];
+  setSelected({
+    kind: "ApexTestRun",
+    runId,
+    summary: {
+      outcome: run.Outcome || run.Status || "—",
+      testsRan: run.TestsRan,
+      failures: run.Failures,
+      start: run.StartTime,
+      end: run.EndTime,
+    },
+    failureCount: failures.length,
+    failures: failures.map((f) => ({
+      outcome: f.Outcome,
+      class: f.ApexClass?.Name,
+      method: f.MethodName,
+      message: f.Message,
+      runtimeMs: f.RunTime,
+      stack: f.StackTrace,
+    })),
+  });
+
+  log(`Loaded ${failures.length} failing/non-pass test results for run ${runId}.`);
+}
+
+/* -------------------- Correlation: deployments ↔ test runs -------------------- */
+
+function correlateDeploymentsToTests(deployments, testRuns) {
+  deployToTest = new Map();
+
+  const runs = (testRuns || []).map((r) => {
+    const start = parseDate(r.StartTime);
+    const end = parseDate(r.EndTime);
+    const durMs = start ? ((end ? end - start : new Date() - start)) : null;
+    const failures = Number(r.Failures || 0);
+    const outcome = r.Outcome || r.Status || "Unknown";
+    return {
+      runId: r.Id,
+      start,
+      end,
+      durationMs: durMs,
+      failures,
+      outcome,
+      createdById: r.CreatedById,
+      createdByName: r.CreatedBy?.Name,
+    };
+  }).filter((x) => x.start);
+
+  runs.sort((a, b) => b.start - a.start);
+
+  for (const d of deployments || []) {
+    const created = parseDate(d.CreatedDate);
+    const started = parseDate(d.StartDate) || created;
+    const completed = parseDate(d.CompletedDate);
+    if (!started) continue;
+
+    // window: +- 10 minutes around deployment start/end
+    const windowMs = 10 * 60 * 1000;
+    const lo = new Date(started.getTime() - windowMs);
+    const hi = new Date((completed ? completed.getTime() : started.getTime()) + windowMs);
+
+    const userId = d.CreatedById;
+    let best = null;
+
+    for (const r of runs) {
+      if (r.start < lo) break;
+      if (r.start > hi) continue;
+
+      let score = 0;
+      if (userId && r.createdById && userId === r.createdById) score += 3;
+
+      const dt = Math.abs(r.start - started);
+      if (dt < 2 * 60 * 1000) score += 3;
+      else if (dt < 5 * 60 * 1000) score += 2;
+      else score += 1;
+
+      if (r.end) score += 1;
+
+      if (!best || score > best.score) best = { ...r, score };
+    }
+
+    if (!best) continue;
+
+    let confidence = "Low";
+    if (best.score >= 6) confidence = "High";
+    else if (best.score >= 4) confidence = "Medium";
+
+    deployToTest.set(d.Id, {
+      runId: best.runId,
+      outcome: best.failures > 0 ? "Fail" : (String(best.outcome).match(/pass|success/i) ? "Pass" : best.outcome),
+      failures: best.failures,
+      durationMs: best.durationMs,
+      confidence,
+      runStart: best.start?.toISOString(),
+      runEnd: best.end?.toISOString(),
+      createdBy: best.createdByName,
+    });
+  }
+
+  log(`Correlation updated: ${deployToTest.size} deployments matched to test runs.`);
+}
+
+/* -------------------- Packages -------------------- */
+
+function pkgRowHtml(r) {
+  const pkg = r.SubscriberPackage || {};
+  const ver = r.SubscriberPackageVersion || {};
+  const version = [ver.MajorVersion, ver.MinorVersion, ver.PatchVersion, ver.BuildNumber]
+    .filter((x) => x !== null && x !== undefined)
+    .join(".");
+  return `
+    <tr>
+      <td>${pkg.Name || "—"}</td>
+      <td class="mono">${pkg.NamespacePrefix || "—"}</td>
+      <td class="mono">${version || "—"}</td>
+    </tr>
+  `.trim();
+}
+
+async function fetchPackages() {
+  const soql = `
+    SELECT
+      Id,
+      SubscriberPackage.Name,
+      SubscriberPackage.NamespacePrefix,
+      SubscriberPackageVersion.MajorVersion,
+      SubscriberPackageVersion.MinorVersion,
+      SubscriberPackageVersion.PatchVersion,
+      SubscriberPackageVersion.BuildNumber
+    FROM InstalledSubscriberPackage
+    ORDER BY SubscriberPackage.Name
+    LIMIT 200
+  `.trim();
+
+  const tbody = $("packagesTbody");
+  if (tbody) tbody.innerHTML = `<tr><td colspan="3" class="muted small">Loading…</td></tr>`;
+
+  setBusy(true, "Packages…");
+  const { ok, status, json } = await sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
+  setBusy(false);
+
+  if (!ok) {
+    const msg = extractSfError(json);
+    log(`Packages query failed (HTTP ${status}): ${msg}`);
+    if (tbody) tbody.innerHTML = `<tr><td colspan="3" class="muted small">Failed to load packages.</td></tr>`;
+    setSelected(`Packages query failed:\n${msg}`);
+    return;
+  }
+
+  const recs = json?.records || [];
+  const q = ($("pkgSearch")?.value || "").trim().toLowerCase();
+
+  const filtered = !q ? recs : recs.filter((r) => {
+    const p = r.SubscriberPackage || {};
+    const blob = `${p.Name || ""} ${p.NamespacePrefix || ""}`.toLowerCase();
+    return blob.includes(q);
+  });
+
+  if (!filtered.length) {
+    if (tbody) tbody.innerHTML = `<tr><td colspan="3" class="muted small">No packages match your search.</td></tr>`;
+    return;
+  }
+
+  if (tbody) tbody.innerHTML = filtered.map(pkgRowHtml).join("\n");
+  log(`Packages refreshed (${filtered.length} rows).`);
+}
+
+/* -------------------- Package history discovery -------------------- */
+
+async function discoverPackageHistorySources() {
+  setBusy(true, "Discover…");
+  const { ok, status, json } = await sfFetch(`/sobjects/`, { tooling: false });
+  setBusy(false);
+
+  if (!ok) {
+    const msg = extractSfError(json);
+    setText("packageHistoryPre", `Failed to list sObjects (HTTP ${status}):\n${msg}`);
+    return;
+  }
+
+  const names = (json?.sobjects || []).map((s) => s.name).filter(Boolean);
+  const candidates = names.filter((n) => /(package|install|subscriber|managed|unlocked|2gp|1gp)/i.test(n));
+
+  setText(
+    "packageHistoryPre",
+    "Candidate objects (names only):\n\n" + candidates.sort().join("\n") +
+      "\n\nNext step: pick the best candidate and query recent records for install events."
+  );
+
+  log(`Discovered ${candidates.length} candidate objects for package history.`);
+}
+
+/* -------------------- Deploy details (REST Metadata deploy status) -------------------- */
+
+async function fetchDeployDetails() {
+  const id = ($("metadataDeployIdInput")?.value || "").trim();
+  if (!id) {
+    setText("deployDetailsPre", "Paste a Metadata deploy async id first.");
+    return;
+  }
+
+  setText("deployDetailsPre", "Loading…");
+
+  // REST Metadata deploy status:
+  // /services/data/vXX.X/metadata/deployRequest/<id>?includeDetails=true
+  setBusy(true, "Deploy details…");
+  const { ok, status, json } = await sfFetch(`/metadata/deployRequest/${encodeURIComponent(id)}?includeDetails=true`, { tooling: false });
+  setBusy(false);
+
+  if (!ok) {
+    const msg = extractSfError(json);
+    setText("deployDetailsPre", `Deploy details failed (HTTP ${status}):\n${msg}`);
+    return;
+  }
+
+  setText("deployDetailsPre", JSON.stringify(json, null, 2));
+  setSelected({ kind: "MetadataDeployStatus", asyncId: id, status: json?.status || json?.Status, raw: json });
+  log(`Loaded deploy details for ${id}.`);
+}
+
+/* -------------------- Refresh orchestration -------------------- */
+
+async function refreshActiveTab(isPoll = false) {
+  const active =
+    $("tabDeployments")?.classList.contains("active") ? "deployments" :
+    $("tabApexTests")?.classList.contains("active") ? "tests" :
+    $("tabPackages")?.classList.contains("active") ? "packages" :
+    $("tabPackageHistory")?.classList.contains("active") ? "history" :
+    "details";
+
+  if (inFlight) {
+    if (isPoll) lastPollSkipped = true;
+    return;
+  }
+
+  try {
+    if (active === "deployments") {
+      $("deploymentsTbody").innerHTML = `<tr><td colspan="14" class="muted small">Loading…</td></tr>`;
+      await fetchDeployments();
+    } else if (active === "tests") {
+      $("testsTbody").innerHTML = `<tr><td colspan="9" class="muted small">Loading…</td></tr>`;
+      await refreshTests(false);
+    } else if (active === "packages") {
+      await fetchPackages();
+    } else if (active === "history") {
+      log("Package history: use Discover candidate objects.");
+    } else {
+      log("Deploy details: paste async id then Fetch.");
+    }
+
+    setLastRefreshed();
+    if (isPoll && lastPollSkipped) log("Polling: one tick was skipped due to in-flight request.");
+  } catch (e) {
+    log(`Refresh error: ${e?.message || e}`);
+  }
+}
+
+function clearStorageAndReload() {
+  clearToken();
+  clearSessionState();
+  stopPolling();
+  deployToTest = new Map();
+  localStorage.removeItem(TOKEN_KEY);
+  showBanner("");
+  log("Cleared local + session storage. Reloading…");
+  location.reload();
+}
+
+/* -------------------- Wiring -------------------- */
+
+wireClick("loginBtn", login);
+wireClick("logoutBtn", logout);
+wireClick("refreshBtn", () => refreshActiveTab(false));
+wireClick("clearStorageBtn", clearStorageAndReload);
+
+wireClick("tabDeployments", async () => { showTab("deployments"); await refreshActiveTab(false); });
+wireClick("tabApexTests", async () => { showTab("tests"); await refreshActiveTab(false); });
+wireClick("tabPackages", async () => { showTab("packages"); await refreshActiveTab(false); });
+wireClick("tabPackageHistory", async () => { showTab("history"); await refreshActiveTab(false); });
+wireClick("tabDeployDetails", async () => { showTab("details"); await refreshActiveTab(false); });
+
+wireChange("pollInterval", () => startPolling());
+wireChange("deployFilter", debounce(() => refreshActiveTab(false), 0));
+wireChange("deployLimit", debounce(() => refreshActiveTab(false), 0));
+wireInput("deploySearch", debounce(() => {
+  const filtered = (lastDeployments || []).filter(passesDeployFilter).filter(passesDeploySearch);
+  renderDeploymentsTable(filtered);
+}, 200));
+
+wireChange("testLimit", debounce(() => refreshTests(false), 0));
+wireChange("testFilter", debounce(() => {
+  const filtered = (lastTestRuns || []).filter(passesTestFilter).filter(passesTestSearch);
+  renderTestsTable(filtered);
+}, 0));
+wireInput("testSearch", debounce(() => {
+  const filtered = (lastTestRuns || []).filter(passesTestFilter).filter(passesTestSearch);
+  renderTestsTable(filtered);
+}, 200));
+wireClick("refreshTestsBtn", () => refreshTests(false));
+
+wireInput("pkgSearch", debounce(() => fetchPackages(), 200));
+wireClick("refreshPackagesBtn", fetchPackages);
+
+wireClick("discoverHistoryBtn", discoverPackageHistorySources);
+wireClick("refreshHistoryBtn", () => log("History refresh placeholder. Use Discover first."));
+
+wireClick("fetchDeployDetailsBtn", fetchDeployDetails);
+
+/* -------------------- Init -------------------- */
+
+(async function init() {
+  setText("buildPill", BUILD);
+  setText("apiPill", `v${API_VERSION}`);
+  showBanner("");
+
+  showTab("deployments");
+
+  await handleRedirectIfPresent();
+
+  const token = loadToken();
+  if (token?.access_token) {
+    setText("orgPill", token.instance_url || "Connected");
+    log("Session restored (token found in localStorage).");
+
+    await refreshTests(true);   // prime correlation
+    await fetchDeployments();
+
+    setLastRefreshed();
+    startPolling();
+  } else {
+    setText("orgPill", "Not connected");
+    log("Not logged in.");
+  }
+})();
