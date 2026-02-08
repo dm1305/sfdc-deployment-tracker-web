@@ -1,0 +1,92 @@
+<!-- workbench.html -->
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Workbench Mode</title>
+  <meta name="color-scheme" content="dark light" />
+  <!-- Uses the same styles.css as your other pages -->
+  <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+  <div class="app">
+    <div class="topbar">
+      <div class="title">
+        <h1>Workbench Mode (Metadata API)</h1>
+        <div class="pills">
+          <div class="pill">Org: <code id="orgPill">Not connected</code></div>
+          <div class="pill">API: <code id="apiPill">—</code></div>
+          <div class="pill">Build: <code id="buildPill">—</code></div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <select id="apiVersionSelect" title="Choose REST/Tooling API version for calls"></select>
+        <button id="loginBtn" title="Start OAuth login flow">Login</button>
+        <button id="logoutBtn" title="Clears token + stops polling">Logout</button>
+
+        <a class="tab" href="index.html" title="Back to deployments">Deployments</a>
+        <a class="tab" href="inventory.html" title="Tooling inventory scan">Inventory</a>
+      </div>
+    </div>
+
+    <div id="authBanner" class="banner"></div>
+
+    <div class="controls">
+      <span class="label">Proxy URL</span>
+      <input id="proxyUrl" placeholder="https://your-worker.yourdomain.workers.dev" style="min-width:420px;" />
+
+      <span class="label">Action</span>
+      <select id="wbAction">
+        <option value="list" selected>List metadata (listMetadata)</option>
+        <option value="retrieve">Retrieve (benchmark)</option>
+      </select>
+
+      <span class="label">Type</span>
+      <input id="mdType" placeholder="e.g. Flow, ApexClass, Layout" style="min-width:240px;" />
+
+      <span class="label">Members</span>
+      <input id="mdMembers" placeholder="comma-separated or *" style="min-width:260px;" />
+
+      <button id="runBtn">Run</button>
+      <button id="downloadBtn" disabled>Download ZIP</button>
+
+      <div class="progressWrap" style="margin-left:auto; display:flex; gap:10px; align-items:center;">
+        <span class="muted small" id="timerLabel">Timer: 0.0s</span>
+        <span class="badge" id="busyPill" title="Shows when a request is in-flight">Idle</span>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div class="card">
+        <div class="cardHeader">
+          <div class="h">Output</div>
+          <div class="meta">
+            <span id="lastRequest" class="muted">Last request: —</span>
+          </div>
+        </div>
+        <div class="cardBody">
+          <pre id="outputPre" class="rightPre" style="min-height: 560px;">Ready.</pre>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="cardHeader">
+          <div class="h">Logs</div>
+          <div class="meta"></div>
+        </div>
+        <div class="cardBody">
+          <pre id="logPre" class="rightPre">Ready.</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Shared auth helper -->
+  <script src="auth.js"></script>
+  <!-- Page logic -->
+  <script src="workbench.js"></script>
+</body>
+</html>
