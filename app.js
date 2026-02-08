@@ -1,213 +1,454 @@
-const API_VERSION = "65.0";
+// ====== CONFIG (edit these) ======
+const CLIENT_ID = "3MVG9YFqzc_KnL.wada6.pbgp4zDPc8T6u6uR6srOVo1fS7XOD_kHsrDH_QurZzXeEgwzWBU365_xXQ54mMNn";
+const LOGIN_DOMAIN = "https://gearsetcom-4bf-dev-ed.develop.my.salesforce.com"; // your org My Domain
+// =================================
+
+// Build label (helps with caching / verifying deploy)
+const BUILD = "2026-02-08.1";
+
+// Storage keys
 const TOKEN_KEY = "sf_token";
 
-const $ = (id) => document.getElementById(id);
+// API version (from /services/data)
+const API_VERSION = "65.0";
 
-let cachedRecords = [];
-let trendChart = null;
-let activeJobs = new Set();
+// Polling
+let pollTimer = null;
 
-/* ---------------- Core Fetch ---------------- */
+// Busy state (prevents stacked requests)
+let inFlight = false;
+let lastPollSkipped = false;
 
-async function sfFetch(path) {
+// Cached datasets
+let lastDeployments = [];
+let lastTestRuns = [];
+
+// Correlation cache: deployId -> correlation object
+let deployToTest = new Map();
+
+/* -------------------- UI helpers -------------------- */
+
+function $(id) { return document.getElementById(id); }
+
+function setText(id, text) {
+  const el = $(id);
+  if (el) el.textContent = text;
+}
+
+function show(el, on) {
+  if (!el) return;
+  el.style.display = on ? "" : "none";
+}
+
+function setBusy(isBusy, label = null) {
+  inFlight = isBusy;
+  const pill = $("busyPill");
+  if (pill) pill.textContent = isBusy ? (label || "Working…") : "Idle";
+
+  // disable main actions while busy
+  const ids = ["refreshBtn", "refreshPackagesBtn", "refreshTestsBtn", "discoverHistoryBtn", "fetchDeployDetailsBtn"];
+  ids.forEach((i) => {
+    const b = $(i);
+    if (b) b.disabled = !!isBusy;
+  });
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function log(msg) {
+  const el = $("logPre");
+  if (!el) return;
+  const stamp = nowIso();
+  el.textContent = `[${stamp}] ${msg}\n` + el.textContent;
+}
+
+function setSelected(objOrText) {
+  const el = $("selectedPre");
+  if (!el) return;
+  el.textContent = typeof objOrText === "string" ? objOrText : JSON.stringify(objOrText, null, 2);
+}
+
+function showBanner(message) {
+  const b = $("authBanner");
+  if (!b) return;
+  b.textContent = message;
+  b.style.display = message ? "block" : "none";
+}
+
+function setLastRefreshed() {
+  setText("lastRefreshed", `Last refreshed: ${new Date().toISOString().replace("T", " ").replace("Z", "Z")}`);
+}
+
+function setLastRequest(text) {
+  setText("lastRequest", `Last request: ${text}`);
+}
+
+function wireClick(id, handler) {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener("click", (e) => handler(e));
+}
+
+function wireChange(id, handler) {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener("change", (e) => handler(e));
+}
+
+function wireInput(id, handler) {
+  const el = $(id);
+  if (!el) return;
+  el.addEventListener("input", (e) => handler(e));
+}
+
+function debounce(fn, ms = 250) {
+  let t = null;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
+/* -------------------- Storage helpers -------------------- */
+
+function saveToken(token) {
+  localStorage.setItem(TOKEN_KEY, JSON.stringify(token));
+}
+
+function loadToken() {
   const raw = localStorage.getItem(TOKEN_KEY);
-  if (!raw) throw new Error("Missing sf_token");
+  return raw ? JSON.parse(raw) : null;
+}
 
-  const token = JSON.parse(raw);
-  const url = `${token.instance_url}/services/data/v${API_VERSION}${path}`;
+function clearToken() {
+  localStorage.removeItem(TOKEN_KEY);
+}
 
-  const resp = await fetch(url, {
-    headers: { Authorization: `Bearer ${token.access_token}` }
+function clearSessionState() {
+  sessionStorage.removeItem("pkce_verifier");
+  sessionStorage.removeItem("oauth_state");
+}
+
+function redactTokenForDisplay(token) {
+  if (!token) return token;
+  const copy = { ...token };
+  if (copy.access_token) copy.access_token = "(redacted)";
+  if (copy.refresh_token) copy.refresh_token = "(redacted)";
+  if (copy.id_token) copy.id_token = "(redacted)";
+  return copy;
+}
+
+/* -------------------- Global error traps -------------------- */
+
+window.addEventListener("error", (e) => {
+  log(`JS error: ${e?.message || e}`);
+});
+
+window.addEventListener("unhandledrejection", (e) => {
+  const reason = e?.reason?.message || String(e?.reason || e);
+  log(`Unhandled promise rejection: ${reason}`);
+});
+
+/* -------------------- PKCE helpers -------------------- */
+
+function base64UrlEncode(bytes) {
+  let bin = "";
+  bytes.forEach((b) => (bin += String.fromCharCode(b)));
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+async function sha256Base64Url(text) {
+  const data = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return base64UrlEncode(new Uint8Array(digest));
+}
+
+function randomString(length = 64) {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  return Array.from(bytes, (b) => chars[b % chars.length]).join("");
+}
+
+function getRedirectUri() {
+  return window.location.origin + window.location.pathname;
+}
+
+/* -------------------- OAuth -------------------- */
+
+async function login() {
+  if (!CLIENT_ID) {
+    alert("Missing CLIENT_ID in app.js.");
+    return;
+  }
+
+  const redirectUri = getRedirectUri();
+
+  const codeVerifier = randomString(96);
+  const codeChallenge = await sha256Base64Url(codeVerifier);
+  sessionStorage.setItem("pkce_verifier", codeVerifier);
+
+  const state = randomString(24);
+  sessionStorage.setItem("oauth_state", state);
+
+  const authUrl = new URL(`${LOGIN_DOMAIN}/services/oauth2/authorize`);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("client_id", CLIENT_ID);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("scope", "refresh_token full");
+  authUrl.searchParams.set("state", state);
+  authUrl.searchParams.set("code_challenge", codeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+
+  window.location.href = authUrl.toString();
+}
+
+async function handleRedirectIfPresent() {
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const error = url.searchParams.get("error");
+  const errorDesc = url.searchParams.get("error_description");
+
+  if (error) {
+    showBanner(`OAuth error: ${error}${errorDesc ? " - " + errorDesc : ""}`);
+    log(`OAuth error: ${error}${errorDesc ? " - " + errorDesc : ""}`);
+    return;
+  }
+
+  if (!code) return;
+
+  const expectedState = sessionStorage.getItem("oauth_state");
+  if (!expectedState || state !== expectedState) {
+    showBanner("State mismatch. Aborting.");
+    log("State mismatch. Aborting.");
+    return;
+  }
+
+  const verifier = sessionStorage.getItem("pkce_verifier");
+  if (!verifier) {
+    showBanner("Missing PKCE verifier. Aborting.");
+    log("Missing PKCE verifier. Aborting.");
+    return;
+  }
+
+  // Clean URL
+  url.searchParams.delete("code");
+  url.searchParams.delete("state");
+  window.history.replaceState({}, document.title, url.toString());
+
+  // Exchange for token
+  setBusy(true, "Auth…");
+  setLastRequest("token exchange");
+
+  const tokenUrl = `${LOGIN_DOMAIN}/services/oauth2/token`;
+  const body = new URLSearchParams();
+  body.set("grant_type", "authorization_code");
+  body.set("client_id", CLIENT_ID);
+  body.set("redirect_uri", getRedirectUri());
+  body.set("code", code);
+  body.set("code_verifier", verifier);
+
+  const resp = await fetch(tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
   });
 
-  const text = await resp.text();
-  const json = text ? JSON.parse(text) : {};
+  const json = await resp.json().catch(() => null);
+  setBusy(false);
 
   if (!resp.ok) {
-    const msg = json?.[0]?.message || json.message || "API error";
-    throw new Error(msg);
+    const msg = json?.error_description || json?.error || `HTTP ${resp.status}`;
+    showBanner(`Token error: ${msg}`);
+    log(`Token exchange failed: ${msg}`);
+    return;
   }
 
-  return json;
+  saveToken(json);
+  clearSessionState();
+  showBanner("");
+
+  setText("orgPill", json.instance_url || "Connected");
+  setText("apiPill", `v${API_VERSION}`);
+  setText("buildPill", BUILD);
+
+  log("Logged in. Token stored in localStorage.");
+  setSelected(redactTokenForDisplay(json));
 }
 
-/* ---------------- Notifications ---------------- */
+/* -------------------- Auth lifecycle -------------------- */
 
-function requestNotifyPermission() {
-  Notification.requestPermission().then(p => {
-    if (p === "granted") alert("Notifications enabled!");
-  });
-}
-
-function notifyUser(title, body) {
-  if (Notification.permission === "granted") {
-    new Notification(title, {
-      body,
-      icon: "https://www.salesforce.com/favicon.ico"
-    });
-  }
-}
-
-/* ---------------- Live Monitor ---------------- */
-
-async function pollActiveDeployments() {
-  try {
-    const soql =
-      "SELECT Id, Status FROM DeployRequest WHERE Status IN ('InProgress','Queued')";
-    const res = await sfFetch(`/tooling/query?q=${encodeURIComponent(soql)}`);
-
-    const current = new Set(res.records.map(r => r.Id));
-
-    activeJobs.forEach(id => {
-      if (!current.has(id)) {
-        notifyUser("Deployment Complete", `Job ${id} completed`);
-        loadRecent();
-      }
-    });
-
-    activeJobs = current;
-
-    $("liveMonitorList").innerHTML = res.records.length
-      ? res.records.map(r =>
-          `<div class="status-badge status-InProgress">${r.Id.substring(0,15)}...</div>`
-        ).join("")
-      : "<small>All quiet.</small>";
-  } catch (e) {
-    console.error(e);
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
   }
 }
 
-/* ---------------- Deployment Details ---------------- */
-
-async function analyzeDeployment(id) {
-  $("detailsPanel").style.display = "block";
-  $("dependencyMap").innerHTML = "<small>Loading...</small>";
-
-  try {
-    const data = await sfFetch(
-      `/metadata/deployRequest/${id}?includeDetails=true`
-    );
-
-    const details = data.details || {};
-    const tests = data.runTestResult?.failures || [];
-
-    let html = "";
-
-    (details.componentFailures || []).forEach(f => {
-      html += `
-        <div class="dep-card">
-          <strong>${f.componentType}:</strong> ${f.fullName}
-          <br><small style="color:red">${f.problem}</small>
-        </div>`;
-    });
-
-    tests.forEach(t => {
-      html += `
-        <div class="dep-card test-fail">
-          <strong>${t.name}.${t.methodName}</strong>
-          <pre>${t.message}\n${t.stackTrace || ""}</pre>
-        </div>`;
-    });
-
-    $("dependencyMap").innerHTML = html || "<p>No blockers found.</p>";
-  } catch (e) {
-    $("dependencyMap").innerHTML =
-      `<p style="color:red">Failed to load: ${e.message}</p>`;
-  }
-}
-
-/* ---------------- Filtering + Load ---------------- */
-
-function toSoql(dt) {
-  return dt.toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
-async function loadRecent() {
-  const start = $("filterStart").value;
-  const end = $("filterEnd").value;
-
-  let q =
-    "SELECT Id, Status, CreatedDate, CompletedDate FROM DeployRequest";
-  const f = [];
-
-  if (start) f.push(`CreatedDate >= ${toSoql(new Date(start))}`);
-  if (end) {
-    const d = new Date(end);
-    d.setUTCDate(d.getUTCDate() + 1);
-    f.push(`CreatedDate < ${toSoql(d)}`);
+function startPolling() {
+  stopPolling();
+  const seconds = Number($("pollInterval")?.value || 0);
+  if (!seconds) {
+    log("Auto-refresh disabled.");
+    return;
   }
 
-  if (f.length) q += " WHERE " + f.join(" AND ");
-  q += " ORDER BY CreatedDate DESC LIMIT 50";
+  pollTimer = setInterval(async () => {
+    if (inFlight) {
+      lastPollSkipped = true;
+      return;
+    }
+    lastPollSkipped = false;
+    await refreshActiveTab(true);
+  }, seconds * 1000);
 
-  const res = await sfFetch(`/tooling/query?q=${encodeURIComponent(q)}`);
-  cachedRecords = res.records;
-
-  $("deploymentsTbody").innerHTML = cachedRecords.map(r => `
-    <tr onclick="analyzeDeployment('${r.Id}')">
-      <td><span class="status-badge status-${r.Status}">${r.Status}</span></td>
-      <td>${r.CompletedDate
-        ? ((new Date(r.CompletedDate) - new Date(r.CreatedDate))/1000).toFixed(0) + "s"
-        : "—"}</td>
-    </tr>
-  `).join("");
-
-  updateTrendChart(cachedRecords);
+  log(`Auto-refresh enabled: every ${seconds}s`);
 }
 
-/* ---------------- CSV Export ---------------- */
-
-function exportToCSV() {
-  const rows = [["Id","Status","Created","Duration"]];
-  cachedRecords.forEach(r => {
-    const d = r.CompletedDate
-      ? (new Date(r.CompletedDate) - new Date(r.CreatedDate))/1000
-      : 0;
-    rows.push([r.Id, r.Status, r.CreatedDate, d]);
-  });
-
-  const csv = "data:text/csv;charset=utf-8," +
-    rows.map(r => r.join(",")).join("\n");
-
-  const a = document.createElement("a");
-  a.href = encodeURI(csv);
-  a.download = "deployments.csv";
-  a.click();
+async function logout() {
+  clearToken();
+  clearSessionState();
+  stopPolling();
+  deployToTest = new Map();
+  lastDeployments = [];
+  lastTestRuns = [];
+  showBanner("");
+  setText("orgPill", "Not connected");
+  setText("apiPill", "—");
+  setText("buildPill", BUILD);
+  setSelected("Nothing selected.");
+  log("Logged out.");
 }
 
-/* ---------------- Chart ---------------- */
+/* -------------------- REST helpers -------------------- */
 
-function updateTrendChart(records) {
-  const ctx = $("trendChart").getContext("2d");
+function requireToken() {
+  const token = loadToken();
+  if (!token?.access_token || !token?.instance_url) return null;
+  return token;
+}
 
-  const data = records
-    .filter(r => r.CompletedDate)
-    .reverse()
-    .map(r => ({
-      t: new Date(r.CreatedDate).toLocaleTimeString(),
-      y: (new Date(r.CompletedDate) - new Date(r.CreatedDate))/1000
-    }));
+function isSessionInvalid(sfJson) {
+  const msg = (sfJson?.[0]?.errorCode || sfJson?.error || sfJson?.message || "").toString();
+  return /INVALID_SESSION_ID|invalid_grant|expired|session/i.test(msg);
+}
 
-  if (trendChart) trendChart.destroy();
+function extractSfError(json) {
+  if (!json) return "Unknown error";
+  if (Array.isArray(json) && json[0]?.message) return json[0].message;
+  if (json?.message) return json.message;
+  if (json?.error_description) return json.error_description;
+  if (json?.error) return json.error;
+  return JSON.stringify(json);
+}
 
-  trendChart = new Chart(ctx, {
-    type: "line",
-    data: {
-      labels: data.map(d => d.t),
-      datasets: [{
-        data: data.map(d => d.y),
-        borderColor: "#10ad9d",
-        fill: false
-      }]
+async function sfFetch(path, { tooling = false, method = "GET", headers = {}, body = null } = {}) {
+  const token = requireToken();
+  if (!token) {
+    showBanner("Not logged in. Click Login.");
+    return { ok: false, status: 0, json: null };
+  }
+
+  const base = tooling
+    ? `${token.instance_url}/services/data/v${API_VERSION}/tooling`
+    : `${token.instance_url}/services/data/v${API_VERSION}`;
+  const url = `${base}${path}`;
+
+  setLastRequest(`${tooling ? "tooling" : "rest"} ${method} ${path}`);
+
+  const resp = await fetch(url, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token.access_token}`,
+      ...headers,
     },
-    options: { maintainAspectRatio: false }
+    body,
   });
+
+  const json = await resp.json().catch(() => null);
+
+  if (!resp.ok) {
+    const sfErr = extractSfError(json);
+    if (resp.status === 401 || isSessionInvalid(json)) {
+      stopPolling();
+      showBanner(`Session expired/invalid. Click Login again. (HTTP ${resp.status})`);
+      log(`Auth/session error: ${sfErr}`);
+    } else {
+      log(`SF request failed (HTTP ${resp.status}): ${sfErr}`);
+    }
+  }
+
+  return { ok: resp.ok, status: resp.status, json };
 }
 
-/* ---------------- Init ---------------- */
+/* -------------------- Time formatting -------------------- */
 
-setInterval(pollActiveDeployments, 5000);
-
-if (localStorage.getItem(TOKEN_KEY)) {
-  loadRecent();
+function parseDate(s) {
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isFinite(d.getTime()) ? d : null;
 }
+
+function fmtTime(d) {
+  if (!d) return "—";
+  return d.toISOString().replace("T", " ").replace("Z", "Z");
+}
+
+function fmtDuration(ms) {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
+  const sec = Math.floor(ms / 1000);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return `${h}h ${m}m ${s}s`;
+}
+
+/* -------------------- Tabs / panels -------------------- */
+
+function setResultsView(view) {
+  show($("deploymentsTableWrap"), view === "deployments");
+  show($("testsTableWrap"), view === "tests");
+  show($("packagesTableWrap"), view === "packages");
+  show($("packageHistoryWrap"), view === "history");
+  show($("deployDetailsWrap"), view === "details");
+}
+
+function showTab(tab) {
+  const tabs = ["tabDeployments", "tabApexTests", "tabPackages", "tabPackageHistory", "tabDeployDetails"];
+  tabs.forEach((id) => $(id)?.classList.remove("active"));
+
+  if (tab === "deployments") $("tabDeployments")?.classList.add("active");
+  if (tab === "tests") $("tabApexTests")?.classList.add("active");
+  if (tab === "packages") $("tabPackages")?.classList.add("active");
+  if (tab === "history") $("tabPackageHistory")?.classList.add("active");
+  if (tab === "details") $("tabDeployDetails")?.classList.add("active");
+
+  show($("deploymentsControls"), tab === "deployments");
+  show($("apexTestsControls"), tab === "tests");
+  show($("packagesControls"), tab === "packages");
+  show($("packageHistoryControls"), tab === "history");
+  show($("deployDetailsControls"), tab === "details");
+
+  setResultsView(tab);
+
+  const title = $("resultsTitle");
+  if (title) {
+    title.textContent =
+      tab === "deployments" ? "Results (Deployments)" :
+      tab === "tests" ? "Results (Apex tests)" :
+      tab === "packages" ? "Results (Packages)" :
+      tab === "history" ? "Results (Package history)" :
+      "Results (Deploy details)";
+  }
+}
+
+/* -------------------- Deployments + correlation -------------------- */
+
+function statusClass(status) {
+  const s = String(status || "").toLowerCase();
+  if (["succeeded", "success", "completed"].some((k) => s.includes(k))) return "good";
+  if (["failed", "error"].some((k) => s.includes(k))) return "bad";
+  if (["inprogress", "in progress", "queued", "pending"]()
