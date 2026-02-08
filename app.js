@@ -2,35 +2,26 @@
 const CLIENT_ID = "3MVG9YFqzc_KnL.wada6.pbgp4zDPc8T6u6uR6srOVo1fS7XOD_kHsrDH_QurZzXeEgwzWBU365_xXQ54mMNn";
 const LOGIN_DOMAIN = "https://gearsetcom-4bf-dev-ed.develop.my.salesforce.com";
 const API_VERSION = "65.0";
-// =================================
+// ========================================
 
 const TOKEN_KEY = "sf_token";
-let pollTimer = null;
 
-/* -------------------- basic helpers -------------------- */
+/* ---------------- utilities ---------------- */
 
-function el(id) {
-  return document.getElementById(id);
-}
-
-function setText(id, text) {
-  const e = el(id);
-  if (e) e.textContent = text;
-}
+const $ = (id) => document.getElementById(id);
 
 function log(msg) {
-  const e = el("logPre");
-  if (!e) return;
-  const ts = new Date().toISOString();
-  e.textContent = `[${ts}] ${msg}\n` + e.textContent;
+  const el = $("logPre");
+  if (!el) return;
+  el.textContent = `[${new Date().toISOString()}] ${msg}\n` + el.textContent;
 }
 
 function setStatus(msg) {
-  const e = el("selectedPre") || el("logPre");
-  if (e) e.textContent = msg;
+  const el = $("statusPre") || $("logPre");
+  if (el) el.textContent = msg;
 }
 
-/* -------------------- storage -------------------- */
+/* ---------------- storage ---------------- */
 
 function saveToken(t) {
   localStorage.setItem(TOKEN_KEY, JSON.stringify(t));
@@ -43,36 +34,36 @@ function loadToken() {
 
 function clearToken() {
   localStorage.removeItem(TOKEN_KEY);
-  sessionStorage.removeItem("pkce_verifier");
-  sessionStorage.removeItem("oauth_state");
+  sessionStorage.clear();
 }
 
-/* -------------------- PKCE -------------------- */
+/* ---------------- PKCE helpers ---------------- */
 
 function randomString(len = 64) {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  const chars =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
   const bytes = new Uint8Array(len);
   crypto.getRandomValues(bytes);
-  return Array.from(bytes, b => chars[b % chars.length]).join("");
+  return Array.from(bytes, (b) => chars[b % chars.length]).join("");
 }
 
 function base64UrlEncode(bytes) {
   let bin = "";
-  bytes.forEach(b => (bin += String.fromCharCode(b)));
+  bytes.forEach((b) => (bin += String.fromCharCode(b)));
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-async function sha256Base64Url(str) {
-  const data = new TextEncoder().encode(str);
+async function sha256Base64Url(text) {
+  const data = new TextEncoder().encode(text);
   const digest = await crypto.subtle.digest("SHA-256", data);
   return base64UrlEncode(new Uint8Array(digest));
 }
 
 function redirectUri() {
-  return window.location.origin + window.location.pathname;
+  return window.location.origin + window.location.pathname.replace(/index\.html$/i, "");
 }
 
-/* -------------------- OAuth -------------------- */
+/* ---------------- OAuth ---------------- */
 
 async function login() {
   const verifier = randomString(96);
@@ -121,7 +112,7 @@ async function handleRedirect() {
   const resp = await fetch(`${LOGIN_DOMAIN}/services/oauth2/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString()
+    body: body.toString(),
   });
 
   const json = await resp.json();
@@ -131,33 +122,34 @@ async function handleRedirect() {
   }
 
   saveToken(json);
-  setText("orgPill", json.instance_url);
-  setText("apiPill", `v${API_VERSION}`);
-  log("Logged in successfully");
+  $("orgPill") && ($("orgPill").textContent = json.instance_url);
+  $("apiPill") && ($("apiPill").textContent = `v${API_VERSION}`);
+  log("Logged in");
 }
 
-/* -------------------- REST helper -------------------- */
+/* ---------------- REST helpers ---------------- */
 
 async function sfFetch(path, tooling = false) {
   const token = loadToken();
-  if (!token) throw new Error("Not logged in");
+  if (!token?.access_token || !token?.instance_url)
+    throw new Error("Not logged in");
 
   const base = tooling
     ? `${token.instance_url}/services/data/v${API_VERSION}/tooling`
     : `${token.instance_url}/services/data/v${API_VERSION}`;
 
-  const r = await fetch(base + path, {
-    headers: { Authorization: `Bearer ${token.access_token}` }
+  const resp = await fetch(base + path, {
+    headers: { Authorization: `Bearer ${token.access_token}` },
   });
 
-  const j = await r.json();
-  if (!r.ok) throw new Error(j[0]?.message || j.message);
-  return j;
+  const json = await resp.json();
+  if (!resp.ok) throw new Error(json[0]?.message || json.message);
+  return json;
 }
 
-/* -------------------- Deployments -------------------- */
+/* ---------------- Deployments ---------------- */
 
-function fmt(ms) {
+function msToDuration(ms) {
   if (!ms) return "—";
   const s = Math.floor(ms / 1000);
   return `${Math.floor(s / 60)}m ${s % 60}s`;
@@ -174,10 +166,11 @@ async function loadDeployments() {
   `;
   const res = await sfFetch(`/query?q=${encodeURIComponent(soql)}`, true);
 
-  const tbody = el("deploymentsTbody");
+  const tbody = $("deploymentsTbody");
+  if (!tbody) return;
   tbody.innerHTML = "";
 
-  res.records.forEach(r => {
+  res.records.forEach((r) => {
     const c = new Date(r.CreatedDate);
     const s = r.StartDate ? new Date(r.StartDate) : null;
     const d = r.CompletedDate ? new Date(r.CompletedDate) : null;
@@ -190,9 +183,9 @@ async function loadDeployments() {
       <td>${c.toISOString()}</td>
       <td>${s ? s.toISOString() : "—"}</td>
       <td>${d ? d.toISOString() : "—"}</td>
-      <td>${fmt(s && c ? s - c : null)}</td>
-      <td>${fmt(d && s ? d - s : null)}</td>
-      <td>${fmt(d && c ? d - c : null)}</td>
+      <td>${msToDuration(s && c ? s - c : null)}</td>
+      <td>${msToDuration(d && s ? d - s : null)}</td>
+      <td>${msToDuration(d && c ? d - c : null)}</td>
       <td>${r.Id}</td>
     `;
     tbody.appendChild(tr);
@@ -201,74 +194,81 @@ async function loadDeployments() {
   log(`Loaded ${res.records.length} deployments`);
 }
 
-/* -------------------- Packages -------------------- */
+/* ---------------- Apex Tests ---------------- */
 
-async function loadPackages() {
+async function loadApexTests() {
   const soql = `
-    SELECT SubscriberPackage.Name,
-           SubscriberPackage.NamespacePrefix,
-           SubscriberPackageVersion.MajorVersion,
-           SubscriberPackageVersion.MinorVersion,
-           SubscriberPackageVersion.PatchVersion,
-           SubscriberPackageVersion.BuildNumber
-    FROM InstalledSubscriberPackage
-    ORDER BY SubscriberPackage.Name
+    SELECT Id, Status, StartTime, EndTime,
+           MethodsCompleted, MethodsFailed,
+           CreatedBy.Name
+    FROM ApexTestRunResult
+    ORDER BY StartTime DESC
+    LIMIT 20
   `;
   const res = await sfFetch(`/query?q=${encodeURIComponent(soql)}`, true);
 
-  const tbody = el("packagesTbody");
+  const tbody = $("testsTbody");
+  if (!tbody) return;
   tbody.innerHTML = "";
 
-  res.records.forEach(r => {
-    const v = r.SubscriberPackageVersion;
+  res.records.forEach((r) => {
+    const s = r.StartTime ? new Date(r.StartTime) : null;
+    const e = r.EndTime ? new Date(r.EndTime) : null;
+    const dur = s && e ? e - s : null;
+
     const tr = document.createElement("tr");
     tr.innerHTML = `
-      <td>${r.SubscriberPackage.Name}</td>
-      <td>${r.SubscriberPackage.NamespacePrefix || "—"}</td>
-      <td>${v.MajorVersion}.${v.MinorVersion}.${v.PatchVersion}.${v.BuildNumber}</td>
+      <td>${r.Status}</td>
+      <td>${r.CreatedBy?.Name || "—"}</td>
+      <td>${s ? s.toISOString() : "—"}</td>
+      <td>${e ? e.toISOString() : "—"}</td>
+      <td>${msToDuration(dur)}</td>
+      <td>${r.MethodsCompleted || 0}</td>
+      <td>${r.MethodsFailed || 0}</td>
+      <td>${r.Id}</td>
     `;
     tbody.appendChild(tr);
   });
 
-  log(`Loaded ${res.records.length} packages`);
+  log(`Loaded ${res.records.length} Apex test runs`);
 }
 
-/* -------------------- Tabs -------------------- */
+/* ---------------- Tabs ---------------- */
 
 function showTab(name) {
-  ["deployments","packages","packageHistory","deployDetails"].forEach(t => {
-    const panel = el(t + "Panel");
-    if (panel) panel.style.display = t === name ? "" : "none";
+  ["deployments", "tests"].forEach((t) => {
+    const p = $(`${t}Panel`);
+    if (p) p.style.display = t === name ? "" : "none";
   });
 }
 
-/* -------------------- wiring -------------------- */
+/* ---------------- wiring ---------------- */
 
-el("loginBtn")?.addEventListener("click", login);
-el("logoutBtn")?.addEventListener("click", () => {
+$("loginBtn")?.addEventListener("click", login);
+$("logoutBtn")?.addEventListener("click", () => {
   clearToken();
   location.reload();
 });
 
-el("tabDeployments")?.addEventListener("click", () => {
+$("tabDeployments")?.addEventListener("click", () => {
   showTab("deployments");
   loadDeployments();
 });
 
-el("tabPackages")?.addEventListener("click", () => {
-  showTab("packages");
-  loadPackages();
+$("tabTests")?.addEventListener("click", () => {
+  showTab("tests");
+  loadApexTests();
 });
 
-/* -------------------- init -------------------- */
+/* ---------------- init ---------------- */
 
 (async function init() {
   try {
     await handleRedirect();
     const t = loadToken();
     if (t) {
-      setText("orgPill", t.instance_url);
-      setText("apiPill", `v${API_VERSION}`);
+      $("orgPill") && ($("orgPill").textContent = t.instance_url);
+      $("apiPill") && ($("apiPill").textContent = `v${API_VERSION}`);
       await loadDeployments();
       log("Session restored");
     } else {
