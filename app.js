@@ -1,107 +1,195 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>SFDC Deployment Tracker (Web)</title>
+// ====== CONFIG (edit these) ======
+const CLIENT_ID = "3MVG9YFqzc_KnL.wada6.pbgp4zDPc8T6u6uR6srOVo1fS7XOD_kHsrDH_QurZzXeEgwzWBU365_xXQ54mMNn";
+const LOGIN_DOMAIN = "https://gearsetcom-4bf-dev-ed.develop.my.salesforce.com"; // your org My Domain
+// =================================
 
-  <style>
-    body {
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-      margin: 24px;
-      line-height: 1.4;
-    }
+const TOKEN_KEY = "sf_token";
 
-    h1 {
-      margin: 0 0 12px;
-    }
+/* ---------- helpers ---------- */
 
-    .row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin: 12px 0;
-    }
+function setStatus(msg) {
+  document.getElementById("status").textContent = msg;
+}
 
-    button {
-      padding: 8px 12px;
-      cursor: pointer;
-      border-radius: 6px;
-      border: 1px solid #ccc;
-      background: #f7f7f7;
-    }
+function saveToken(token) {
+  localStorage.setItem(TOKEN_KEY, JSON.stringify(token));
+}
 
-    button:hover {
-      background: #eee;
-    }
+function loadToken() {
+  const raw = localStorage.getItem(TOKEN_KEY);
+  return raw ? JSON.parse(raw) : null;
+}
 
-    input {
-      padding: 8px;
-      border-radius: 6px;
-      border: 1px solid #ccc;
-      min-width: 360px;
-    }
+function clearToken() {
+  localStorage.removeItem(TOKEN_KEY);
+}
 
-    pre {
-      background: #111;
-      color: #eee;
-      padding: 12px;
-      border-radius: 8px;
-      overflow: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-      margin-top: 16px;
-    }
+function base64UrlEncode(bytes) {
+  let bin = "";
+  bytes.forEach(b => (bin += String.fromCharCode(b)));
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
 
-    .hint {
-      color: #555;
-      font-size: 14px;
-      margin-top: 8px;
-    }
-  </style>
-</head>
+async function sha256Base64Url(text) {
+  const data = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return base64UrlEncode(new Uint8Array(digest));
+}
 
-<body>
-  <h1>SFDC Deployment Tracker (Web)</h1>
+function randomString(length = 64) {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  return Array.from(bytes, b => chars[b % chars.length]).join("");
+}
 
-  <!-- Auth + basic info -->
-  <div class="row">
-    <button id="loginBtn">Login</button>
-    <button id="logoutBtn">Logout</button>
-    <button id="tokenBtn">Token summary</button>
-    <button id="meBtn">Call /userinfo</button>
-  </div>
+function getRedirectUri() {
+  return window.location.origin + window.location.pathname;
+}
 
-  <!-- Deployment overview -->
-  <div class="row">
-    <button id="deploymentsBtn">List deployments</button>
-    <button id="activeDeploymentsBtn">List active deployments</button>
-  </div>
+/* ---------- OAuth ---------- */
 
-  <!-- Metadata deploy details -->
-  <div class="row">
-    <input
-      id="metadataDeployIdInput"
-      placeholder="Paste Metadata deploy id (async id)"
-    />
-    <button id="deployDetailsBtn">
-      Deploy details (components)
-    </button>
-  </div>
+async function login() {
+  if (!CLIENT_ID || CLIENT_ID.includes("PASTE_")) {
+    alert("Set CLIENT_ID in app.js first.");
+    return;
+  }
 
-  <div class="hint">
-    Flow:
-    <ol>
-      <li>Click <b>Login</b> and authenticate with Salesforce.</li>
-      <li>Use <b>List deployments</b> to see recent org deployments.</li>
-      <li>If you have a Metadata deploy async id, paste it above and click
-          <b>Deploy details (components)</b> to see component names, types, counts,
-          and failures.</li>
-    </ol>
-  </div>
+  const redirectUri = getRedirectUri();
 
-  <pre id="status">Not logged in</pre>
+  // PKCE
+  const codeVerifier = randomString(96);
+  const codeChallenge = await sha256Base64Url(codeVerifier);
+  sessionStorage.setItem("pkce_verifier", codeVerifier);
 
-  <script src="app.js"></script>
-</body>
-</html>
+  const state = randomString(24);
+  sessionStorage.setItem("oauth_state", state);
+
+  const authUrl = new URL(`${LOGIN_DOMAIN}/services/oauth2/authorize`);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("client_id", CLIENT_ID);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("scope", "refresh_token full");
+  authUrl.searchParams.set("state", state);
+  authUrl.searchParams.set("code_challenge", codeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+
+  window.location.href = authUrl.toString();
+}
+
+async function handleRedirectIfPresent() {
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const error = url.searchParams.get("error");
+  const errorDesc = url.searchParams.get("error_description");
+
+  if (error) {
+    setStatus(`OAuth error: ${error}${errorDesc ? " - " + errorDesc : ""}`);
+    return;
+  }
+
+  if (!code) return;
+
+  const expectedState = sessionStorage.getItem("oauth_state");
+  if (!expectedState || state !== expectedState) {
+    setStatus("State mismatch. Aborting.");
+    return;
+  }
+
+  const verifier = sessionStorage.getItem("pkce_verifier");
+  if (!verifier) {
+    setStatus("Missing PKCE verifier. Aborting.");
+    return;
+  }
+
+  // Clean URL
+  url.searchParams.delete("code");
+  url.searchParams.delete("state");
+  window.history.replaceState({}, document.title, url.toString());
+
+  const tokenUrl = `${LOGIN_DOMAIN}/services/oauth2/token`;
+  const body = new URLSearchParams();
+  body.set("grant_type", "authorization_code");
+  body.set("client_id", CLIENT_ID);
+  body.set("redirect_uri", getRedirectUri());
+  body.set("code", code);
+  body.set("code_verifier", verifier);
+
+  const resp = await fetch(tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+
+  const json = await resp.json().catch(() => null);
+  if (!resp.ok) {
+    setStatus(`Token exchange failed: ${json?.error_description || json?.error || resp.status}`);
+    return;
+  }
+
+  saveToken(json);
+  setStatus("Logged in ✅ Token stored in localStorage.\n" + JSON.stringify(json, null, 2));
+}
+
+async function logout() {
+  clearToken();
+  setStatus("Logged out.");
+}
+
+/* ---------- API calls ---------- */
+
+async function callUserInfo() {
+  const token = loadToken();
+  if (!token?.access_token) {
+    setStatus("Not logged in. Click Login first.");
+    return;
+  }
+
+  const resp = await fetch(`${LOGIN_DOMAIN}/services/oauth2/userinfo`, {
+    headers: { Authorization: `Bearer ${token.access_token}` },
+  });
+
+  const json = await resp.json().catch(() => null);
+  if (!resp.ok) {
+    setStatus(`userinfo failed: ${json?.error || json?.message || resp.status}`);
+    return;
+  }
+
+  setStatus("userinfo ✅\n" + JSON.stringify(json, null, 2));
+}
+
+async function callVersions() {
+  const token = loadToken();
+  if (!token?.access_token || !token?.instance_url) {
+    setStatus("Not logged in. Click Login first.");
+    return;
+  }
+
+  const resp = await fetch(`${token.instance_url}/services/data/`, {
+    headers: { Authorization: `Bearer ${token.access_token}` },
+  });
+
+  const json = await resp.json().catch(() => null);
+  if (!resp.ok) {
+    setStatus(`services/data failed: ${json?.error || json?.message || resp.status}`);
+    return;
+  }
+
+  setStatus("services/data ✅ (API versions)\n" + JSON.stringify(json, null, 2));
+}
+
+/* ---------- wire up ---------- */
+
+document.getElementById("loginBtn").addEventListener("click", login);
+document.getElementById("logoutBtn").addEventListener("click", logout);
+document.getElementById("meBtn").addEventListener("click", callUserInfo);
+document.getElementById("orgBtn").addEventListener("click", callVersions);
+
+(async function init() {
+  await handleRedirectIfPresent();
+  const token = loadToken();
+  if (token?.access_token && !document.getElementById("status").textContent.includes("Logged in")) {
+    setStatus("Already logged in ✅ Token loaded from localStorage.");
+  }
+})();
