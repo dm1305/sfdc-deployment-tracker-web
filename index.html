@@ -2,187 +2,502 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>Salesforce Deployment & Test Monitor</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SFDC Deployment Tracker (Web)</title>
+  <meta name="color-scheme" content="dark light" />
 
   <style>
-    body {
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-      margin: 24px;
-      background: #f7f8fa;
-      color: #111;
+    :root{
+      --bg: #0b1220;
+      --panel: #0f1a2e;
+      --panel2:#0c1527;
+      --border: rgba(255,255,255,.10);
+      --text: rgba(255,255,255,.92);
+      --muted: rgba(255,255,255,.62);
+      --good: #2ecc71;
+      --warn: #f39c12;
+      --bad:  #e74c3c;
+      --btn: rgba(255,255,255,.06);
+      --btn2: rgba(255,255,255,.10);
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --sans: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      --radius: 12px;
     }
 
-    h1 {
-      margin: 0 0 12px;
-      font-size: 22px;
+    *{ box-sizing: border-box; }
+    body{
+      margin: 0;
+      font-family: var(--sans);
+      background: radial-gradient(1200px 700px at 20% -10%, rgba(73,127,255,.18), transparent 55%),
+                  radial-gradient(1000px 600px at 85% 0%, rgba(46, 204, 113,.14), transparent 55%),
+                  var(--bg);
+      color: var(--text);
     }
 
-    .topbar {
+    .app{
+      padding: 18px 18px 26px;
+      max-width: 1600px;
+      margin: 0 auto;
+    }
+
+    .topbar{
       display: flex;
+      gap: 12px;
       align-items: center;
-      gap: 8px;
+      justify-content: space-between;
+      padding: 14px 14px;
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.03));
+      border-radius: var(--radius);
+      backdrop-filter: blur(10px);
+    }
+
+    .title{
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 280px;
+    }
+    .title h1{
+      font-size: 18px;
+      margin: 0;
+      letter-spacing: .2px;
+    }
+
+    .pills{
+      display: flex;
       flex-wrap: wrap;
-      margin-bottom: 12px;
+      gap: 8px;
+      align-items: center;
     }
-
-    button {
+    .pill{
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
       padding: 6px 10px;
-      border: 1px solid #ccc;
-      background: #fff;
-      border-radius: 6px;
-      cursor: pointer;
-    }
-
-    button:hover {
-      background: #f0f0f0;
-    }
-
-    .pill {
-      padding: 4px 8px;
       border-radius: 999px;
-      background: #e5e7eb;
+      border: 1px solid var(--border);
+      background: rgba(0,0,0,.18);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .pill code{
+      font-family: var(--mono);
+      color: var(--text);
       font-size: 12px;
     }
 
-    .tabs {
+    .actions{
       display: flex;
-      gap: 6px;
-      margin: 16px 0 8px;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      justify-content: flex-end;
     }
 
-    .tab {
-      padding: 6px 10px;
-      border-radius: 6px;
-      border: 1px solid #ccc;
-      background: #fff;
+    button, select, input{
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.06);
+      color: var(--text);
+      padding: 9px 12px;
+      border-radius: 10px;
+      font-size: 13px;
+      outline: none;
+    }
+    button:hover{ background: rgba(255,255,255,.10); cursor: pointer; }
+    button:disabled{ opacity: .55; cursor: not-allowed; }
+    select, input{ background: rgba(0,0,0,.18); }
+
+    .tabs{
+      margin-top: 14px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .tab{
+      padding: 9px 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.05);
+      color: var(--text);
       cursor: pointer;
-      font-size: 14px;
+      user-select: none;
+      font-size: 13px;
+    }
+    .tab.active{
+      background: rgba(73,127,255,.20);
+      border-color: rgba(73,127,255,.45);
     }
 
-    .tab:hover {
-      background: #f0f0f0;
-    }
-
-    .panel {
-      background: #fff;
-      border: 1px solid #ddd;
-      border-radius: 8px;
+    .controls{
+      margin-top: 14px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,.04);
+      border-radius: var(--radius);
       padding: 12px;
-      margin-bottom: 16px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
     }
 
-    table {
+    .controls .label{
+      color: var(--muted);
+      font-size: 13px;
+      margin-right: 4px;
+    }
+
+    .layout{
+      margin-top: 14px;
+      display: grid;
+      grid-template-columns: 1.55fr .65fr;
+      gap: 14px;
+      align-items: start;
+    }
+
+    .card{
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
+      border-radius: var(--radius);
+      overflow: hidden;
+    }
+
+    .cardHeader{
+      padding: 12px 12px;
+      display: flex;
+      gap: 10px;
+      align-items: baseline;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+    }
+    .cardHeader .h{
+      font-size: 14px;
+      color: var(--text);
+      font-weight: 600;
+    }
+    .cardHeader .meta{
+      color: var(--muted);
+      font-size: 12px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .cardBody{ padding: 12px; }
+
+    table{
       width: 100%;
       border-collapse: collapse;
       font-size: 13px;
     }
-
-    th, td {
-      border-bottom: 1px solid #eee;
-      padding: 6px 8px;
+    th, td{
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      padding: 10px 8px;
+      vertical-align: top;
+    }
+    th{
       text-align: left;
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 12px;
+      letter-spacing: .2px;
+      position: sticky;
+      top: 0;
+      background: rgba(12,21,39,.92);
+      backdrop-filter: blur(10px);
+      z-index: 1;
+    }
+
+    .mono{ font-family: var(--mono); }
+    .muted{ color: var(--muted); }
+    .small{ font-size: 12px; }
+
+    .status.good{ color: var(--good); font-weight: 650; }
+    .status.warn{ color: var(--warn); font-weight: 650; }
+    .status.bad{  color: var(--bad);  font-weight: 650; }
+
+    .badge{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--border);
+      background: rgba(0,0,0,.20);
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      color: var(--text);
       white-space: nowrap;
     }
 
-    th {
-      background: #fafafa;
-      font-weight: 600;
-    }
-
-    pre {
-      background: #0f172a;
-      color: #e5e7eb;
-      padding: 12px;
-      border-radius: 8px;
-      overflow: auto;
+    .rightPre{
+      font-family: var(--mono);
       font-size: 12px;
-      margin: 0;
+      background: rgba(0,0,0,.25);
+      border: 1px solid rgba(255,255,255,.08);
+      padding: 10px;
+      border-radius: 12px;
+      white-space: pre-wrap;
+      overflow: auto;
+      min-height: 360px;
+      max-height: 720px;
     }
 
-    .footer {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
+    .rowActions{
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .btnSmall{
+      padding: 6px 10px;
+      border-radius: 10px;
+      font-size: 12px;
+      background: rgba(255,255,255,.06);
     }
 
-    @media (max-width: 900px) {
-      .footer {
-        grid-template-columns: 1fr;
-      }
+    .hint{
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .banner{
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(231, 76, 60, .45);
+      background: rgba(231, 76, 60, .12);
+      display: none;
+      color: rgba(255,255,255,.92);
+    }
+
+    @media (max-width: 1100px){
+      .layout{ grid-template-columns: 1fr; }
+      .rightPre{ min-height: 260px; }
     }
   </style>
 </head>
 
 <body>
-  <h1>Salesforce Deployment & Apex Test Monitor</h1>
+  <div class="app">
+    <div class="topbar">
+      <div class="title">
+        <h1>SFDC Deployment Tracker (Web)</h1>
+        <div class="pills">
+          <div class="pill" title="Salesforce instance your token is bound to">
+            Org: <code id="orgPill">Not connected</code>
+          </div>
+          <div class="pill" title="REST/Tooling API version used for calls">
+            API: <code id="apiPill">—</code>
+          </div>
+          <div class="pill" title="Build/version of this page (useful for cache debugging)">
+            Build: <code id="buildPill">—</code>
+          </div>
+        </div>
+      </div>
 
-  <div class="topbar">
-    <button id="loginBtn">Login</button>
-    <button id="logoutBtn">Logout</button>
-    <span class="pill" id="orgPill">Not connected</span>
-    <span class="pill" id="apiPill">—</span>
-  </div>
-
-  <div class="tabs">
-    <button class="tab" id="tabDeployments">Deployments</button>
-    <button class="tab" id="tabTests">Apex Tests</button>
-  </div>
-
-  <!-- Deployments -->
-  <div class="panel" id="deploymentsPanel">
-    <h3>Deployments</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Status</th>
-          <th>User</th>
-          <th>Type</th>
-          <th>Created</th>
-          <th>Started</th>
-          <th>Completed</th>
-          <th>Queue</th>
-          <th>Run</th>
-          <th>Total</th>
-          <th>Id</th>
-        </tr>
-      </thead>
-      <tbody id="deploymentsTbody">
-        <tr><td colspan="10">No data loaded.</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <!-- Apex Tests -->
-  <div class="panel" id="testsPanel" style="display:none">
-    <h3>Apex Test Runs</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Status</th>
-          <th>User</th>
-          <th>Started</th>
-          <th>Completed</th>
-          <th>Duration</th>
-          <th>Methods Passed</th>
-          <th>Methods Failed</th>
-          <th>Run Id</th>
-        </tr>
-      </thead>
-      <tbody id="testsTbody">
-        <tr><td colspan="8">No data loaded.</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="footer">
-    <div class="panel">
-      <h3>Selected / Status</h3>
-      <pre id="statusPre">Ready.</pre>
+      <div class="actions">
+        <button id="loginBtn" title="Start OAuth login flow">Login</button>
+        <button id="logoutBtn" title="Clears token + stops polling">Logout</button>
+        <button id="refreshBtn" title="Refresh the active tab data now">Refresh</button>
+        <button id="clearStorageBtn" title="Clears localStorage/sessionStorage used by this app and reloads">Clear storage</button>
+      </div>
     </div>
-    <div class="panel">
-      <h3>Log</h3>
-      <pre id="logPre"></pre>
+
+    <div id="authBanner" class="banner"></div>
+
+    <div class="tabs">
+      <div class="tab active" id="tabDeployments" title="DeployRequest (Tooling API): status + timings + correlated tests">Deployments</div>
+      <div class="tab" id="tabApexTests" title="ApexTestRun/ApexTestResult (Tooling API): recent test runs + failures">Apex tests</div>
+      <div class="tab" id="tabPackages" title="InstalledSubscriberPackage (Tooling API): installed packages inventory">Packages</div>
+      <div class="tab" id="tabPackageHistory" title="Discovery helper for org objects that might represent package install history">Package install history</div>
+      <div class="tab" id="tabDeployDetails" title="Metadata deploy status details (requires async id)">Deploy details</div>
+    </div>
+
+    <!-- Controls: Deployments -->
+    <div class="controls" id="deploymentsControls">
+      <span class="label">Auto-refresh</span>
+      <select id="pollInterval" title="How often to auto-refresh deployments. 0 disables polling.">
+        <option value="0">Off</option>
+        <option value="10">10s</option>
+        <option value="30" selected>30s</option>
+        <option value="60">60s</option>
+      </select>
+
+      <span class="label">Show</span>
+      <select id="deployFilter" title="Filter deployments by status or checkOnly">
+        <option value="all" selected>All</option>
+        <option value="active">Active</option>
+        <option value="failed">Failed</option>
+        <option value="checkonly">Validations (checkOnly)</option>
+        <option value="real">Real deploys</option>
+      </select>
+
+      <span class="label">Limit</span>
+      <select id="deployLimit" title="How many DeployRequest rows to query from Salesforce">
+        <option>10</option>
+        <option selected>20</option>
+        <option>50</option>
+        <option>100</option>
+      </select>
+
+      <input id="deploySearch" placeholder="Search status/type/user/id/error…" title="Client-side search across the fetched rows" style="min-width: 320px;" />
+    </div>
+
+    <!-- Controls: Apex Tests -->
+    <div class="controls" id="apexTestsControls" style="display:none;">
+      <span class="label">Limit</span>
+      <select id="testLimit" title="How many ApexTestRun rows to fetch">
+        <option>10</option>
+        <option selected>20</option>
+        <option>50</option>
+        <option>100</option>
+      </select>
+
+      <span class="label">Show</span>
+      <select id="testFilter" title="Filter test runs by outcome">
+        <option value="all" selected>All</option>
+        <option value="failed">Failed only</option>
+        <option value="passed">Passed only</option>
+      </select>
+
+      <input id="testSearch" placeholder="Search user/status/run id…" title="Client-side search across test runs" style="min-width: 320px;" />
+      <button id="refreshTestsBtn" title="Refresh test runs now">Refresh tests</button>
+    </div>
+
+    <!-- Controls: Packages -->
+    <div class="controls" id="packagesControls" style="display:none;">
+      <input id="pkgSearch" placeholder="Search package name/namespace…" title="Search packages client-side" style="min-width: 320px;" />
+      <button id="refreshPackagesBtn" title="Refresh installed packages inventory">Refresh packages</button>
+    </div>
+
+    <!-- Controls: Package history -->
+    <div class="controls" id="packageHistoryControls" style="display:none;">
+      <button id="discoverHistoryBtn" title="Lists org sObjects containing package/install keywords">Discover candidate objects</button>
+      <button id="refreshHistoryBtn" title="Placeholder for a future direct history query">Refresh (placeholder)</button>
+    </div>
+
+    <!-- Controls: Deploy details -->
+    <div class="controls" id="deployDetailsControls" style="display:none;">
+      <input id="metadataDeployIdInput" placeholder="Paste Metadata deploy async id (0Af…)" title="Async id returned by Metadata deploy operations" style="min-width: 360px;" />
+      <button id="fetchDeployDetailsBtn" title="Fetch deploy details for the provided async id">Fetch details</button>
+    </div>
+
+    <div class="layout">
+      <div class="card">
+        <div class="cardHeader">
+          <div class="h" id="resultsTitle">Results</div>
+          <div class="meta">
+            <span id="lastRefreshed" class="muted">Last refreshed: —</span>
+            <span id="lastRequest" class="muted">Last request: —</span>
+          </div>
+        </div>
+
+        <div class="cardBody" style="padding:0;">
+          <!-- Deployments table -->
+          <div id="deploymentsTableWrap">
+            <div style="max-height: 720px; overflow:auto;">
+              <table>
+                <thead>
+                  <tr>
+                    <th title="DeployRequest.Status">Status</th>
+                    <th title="DeployRequest.CreatedBy.Name">User</th>
+                    <th title="DeployRequest.Type and whether it was a validation (CheckOnly)">Type</th>
+                    <th title="DeployRequest.CreatedDate">Created</th>
+                    <th title="DeployRequest.StartDate (may be null)">Started</th>
+                    <th title="DeployRequest.CompletedDate (null if still running)">Completed</th>
+                    <th title="Queue time = StartDate - CreatedDate">Queue</th>
+                    <th title="Run time = CompletedDate - StartDate (or now if running)">Run</th>
+                    <th title="Total time = CompletedDate - CreatedDate (or now if running)">Total</th>
+                    <th title="Heuristic correlation to an ApexTestRun near this deployment">Tests</th>
+                    <th title="Apex test failures count for the correlated run (if any)">Test fails</th>
+                    <th title="Apex test duration for the correlated run (if any)">Test time</th>
+                    <th title="DeployRequest.Id (Tooling) / may correlate to SalesforceFinalDeploymentId in other systems">Id</th>
+                    <th title="Actions: view details / copy ids">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="deploymentsTbody">
+                  <tr><td colspan="14" class="muted small">Not loaded.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Apex tests table -->
+          <div id="testsTableWrap" style="display:none;">
+            <div style="max-height: 720px; overflow:auto;">
+              <table>
+                <thead>
+                  <tr>
+                    <th title="ApexTestRun.Outcome / Status">Outcome</th>
+                    <th title="ApexTestRun.CreatedBy.Name (or user info available)">User</th>
+                    <th title="ApexTestRun.StartTime">Started</th>
+                    <th title="ApexTestRun.EndTime">Ended</th>
+                    <th title="EndTime - StartTime (or now if running)">Duration</th>
+                    <th title="ApexTestRun.TestsRan">Tests</th>
+                    <th title="ApexTestRun.Failures">Failures</th>
+                    <th title="ApexTestRun.Id">Run Id</th>
+                    <th title="Actions: select run and load failures">Actions</th>
+                  </tr>
+                </thead>
+                <tbody id="testsTbody">
+                  <tr><td colspan="9" class="muted small">Not loaded.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Packages table -->
+          <div id="packagesTableWrap" style="display:none;">
+            <div style="max-height: 720px; overflow:auto;">
+              <table>
+                <thead>
+                  <tr>
+                    <th title="SubscriberPackage.Name">Package</th>
+                    <th title="SubscriberPackage.NamespacePrefix">Namespace</th>
+                    <th title="SubscriberPackageVersion.Major.Minor.Patch.Build">Version</th>
+                  </tr>
+                </thead>
+                <tbody id="packagesTbody">
+                  <tr><td colspan="3" class="muted small">Not loaded.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- Package history -->
+          <div id="packageHistoryWrap" style="display:none; padding:12px;">
+            <div class="hint">
+              This is a discovery helper: it lists sObject names containing keywords like "package", "install", "subscriber".
+              Different orgs expose different objects for package history.
+            </div>
+            <pre id="packageHistoryPre" class="rightPre" style="min-height: 280px; margin-top: 10px;">Not loaded.</pre>
+          </div>
+
+          <!-- Deploy details -->
+          <div id="deployDetailsWrap" style="display:none; padding:12px;">
+            <div class="hint">
+              Deploy details here are for a pasted Metadata async id (0Af…). If you later add “initiate deploy” from the app,
+              you can capture the async id and show component-level results.
+            </div>
+            <pre id="deployDetailsPre" class="rightPre" style="min-height: 280px; margin-top: 10px;">Not loaded.</pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="cardHeader">
+          <div class="h">Selected / Log</div>
+          <div class="meta">
+            <span id="busyPill" class="badge" title="Shows when a request is in-flight">Idle</span>
+          </div>
+        </div>
+        <div class="cardBody">
+          <pre id="selectedPre" class="rightPre" style="min-height: 140px;">Nothing selected.</pre>
+          <div style="height:10px;"></div>
+          <pre id="logPre" class="rightPre">Ready.</pre>
+        </div>
+      </div>
     </div>
   </div>
 
