@@ -5,113 +5,108 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Metadata Inventory</title>
   <meta name="color-scheme" content="dark light" />
-  <style>
-    body{margin:0;font-family:system-ui;background:#0b1220;color:#fff;}
-    .app{padding:18px;max-width:1600px;margin:auto;}
-    .topbar{
-      display:flex;justify-content:space-between;gap:12px;align-items:center;
-      padding:14px;border:1px solid rgba(255,255,255,.1);border-radius:12px;
-    }
-    button,select,input{
-      padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,.14);
-      background:rgba(255,255,255,.06);color:#fff;
-    }
-    button:hover{cursor:pointer;background:rgba(255,255,255,.10);}
-    button:disabled{opacity:.55;cursor:not-allowed;}
-    table{width:100%;border-collapse:collapse;margin-top:14px;}
-    th,td{border-bottom:1px solid rgba(255,255,255,.1);padding:8px;vertical-align:top;}
-    th{color:rgba(255,255,255,.75);font-weight:600;text-align:left;}
-    .row{
-      display:flex;gap:10px;align-items:center;flex-wrap:wrap;
-    }
-
-    /* Loading bar */
-    .progressWrap{
-      margin-top:12px;
-      padding:10px 12px;
-      border:1px solid rgba(255,255,255,.10);
-      border-radius:12px;
-      background:rgba(255,255,255,.04);
-      display:none; /* shown when scanning */
-    }
-    .progressTop{
-      display:flex;
-      justify-content:space-between;
-      gap:12px;
-      align-items:baseline;
-      flex-wrap:wrap;
-      margin-bottom:8px;
-      font-size:13px;
-    }
-    .muted{color:rgba(255,255,255,.70);}
-    .bar{
-      height:10px;
-      border-radius:999px;
-      background:rgba(255,255,255,.10);
-      overflow:hidden;
-    }
-    .bar > div{
-      height:100%;
-      width:0%;
-      background:linear-gradient(90deg, rgba(73,127,255,.75), rgba(46,204,113,.75));
-      transition:width 220ms ease;
-    }
-    .indeterminate .bar > div{
-      width:40%;
-      animation: indet 1.1s infinite ease-in-out;
-    }
-    @keyframes indet{
-      0%{ transform: translateX(-120%); }
-      100%{ transform: translateX(260%); }
-    }
-
-    pre{margin-top:14px;white-space:pre-wrap;background:rgba(0,0,0,.25);padding:12px;border-radius:12px;}
-  </style>
+  <link rel="stylesheet" href="styles.css" />
 </head>
 
 <body>
-<div class="app">
-  <div class="topbar">
-    <h2 style="margin:0;">Metadata Inventory</h2>
-    <div class="row">
-      <select id="apiVersionSelect" title="API version">
-        <option value="65.0">v65.0</option>
-        <option value="64.0">v64.0</option>
-        <option value="63.0">v63.0</option>
-      </select>
-      <a href="./index.html"><button>Back</button></a>
-      <button id="scanBtn">Scan</button>
-      <button id="csvBtn" disabled>CSV</button>
-      <button id="jsonBtn" disabled>JSON</button>
-    </div>
-  </div>
-
-  <!-- Loading / Progress -->
-  <div id="progressWrap" class="progressWrap">
-    <div class="progressTop">
-      <div>
-        <strong id="progressTitle">Scanning…</strong>
-        <span class="muted" id="progressDetail"></span>
+  <div class="app">
+    <div class="topbar">
+      <div class="title">
+        <h1>Metadata Inventory (Tooling-based)</h1>
+        <div class="pills">
+          <div class="pill">Org: <code id="orgPill">Not connected</code></div>
+          <div class="pill">API: <code id="apiPill">—</code></div>
+          <div class="pill">Build: <code id="buildPill">—</code></div>
+        </div>
       </div>
-      <div class="muted" id="progressPct">0%</div>
+
+      <div class="actions">
+        <select id="apiVersionSelect" title="Choose REST/Tooling API version"></select>
+        <button id="loginBtn">Login</button>
+        <button id="logoutBtn">Logout</button>
+        <a class="tab" href="index.html">← Back to Deployments</a>
+      </div>
     </div>
-    <div class="bar"><div id="progressBar"></div></div>
+
+    <div id="authBanner" class="banner"></div>
+
+    <div class="controls">
+      <span class="label">Scope</span>
+      <select id="invScope">
+        <option value="all" selected>All supported types</option>
+        <option value="code">Code (Apex/LWC/Aura)</option>
+        <option value="automation">Automation (Flows)</option>
+        <option value="assets">Assets (Static Resources)</option>
+      </select>
+
+      <span class="label">Per-type limit</span>
+      <select id="invLimit">
+        <option value="100">100</option>
+        <option value="250" selected>250</option>
+        <option value="500">500</option>
+        <option value="1000">1000</option>
+      </select>
+
+      <button id="runInventoryBtn">Run inventory</button>
+      <button id="downloadCsvBtn" disabled>Download CSV</button>
+
+      <div class="progressWrap" style="margin-left:auto;">
+        <span class="muted small" id="progressLabel">Idle</span>
+        <progress id="invProgress" value="0" max="100"></progress>
+        <span class="muted small" id="progressPct">0%</span>
+      </div>
+    </div>
+
+    <div class="layout">
+      <div class="card">
+        <div class="cardHeader">
+          <div class="h">Results</div>
+          <div class="meta">
+            <span id="lastRefreshed" class="muted">Last run: —</span>
+            <span id="lastRequest" class="muted">Last request: —</span>
+          </div>
+        </div>
+
+        <div class="cardBody" style="padding:0;">
+          <div style="max-height: 720px; overflow:auto;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Metadata type</th>
+                  <th>API name</th>
+                  <th>Namespace</th>
+                  <th>Last modified</th>
+                  <th>Modified by</th>
+                  <th>Created</th>
+                  <th>Created by</th>
+                  <th>Id</th>
+                </tr>
+              </thead>
+              <tbody id="invTbody">
+                <tr><td colspan="8" class="muted small">Not loaded.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="cardHeader">
+          <div class="h">Selected / Log</div>
+          <div class="meta">
+            <span class="badge" id="busyPill">Idle</span>
+          </div>
+        </div>
+        <div class="cardBody">
+          <pre id="selectedPre" class="rightPre" style="min-height: 140px;">Nothing selected.</pre>
+          <div style="height:10px;"></div>
+          <pre id="logPre" class="rightPre">Ready.</pre>
+        </div>
+      </div>
+    </div>
   </div>
 
-  <table>
-    <thead>
-      <tr>
-        <th>Type</th><th>API Name</th><th>Last Modified</th><th>User</th><th>Id</th>
-      </tr>
-    </thead>
-    <tbody id="tbody">
-      <tr><td colspan="5">Not scanned.</td></tr>
-    </tbody>
-  </table>
-
-  <pre id="log">Ready.</pre>
-</div>
-
-<script src="./inventory.js"></script>
+  <script src="auth.js"></script>
+  <script src="inventory.js"></script>
 </body>
 </html>
