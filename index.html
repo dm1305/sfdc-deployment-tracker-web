@@ -1,222 +1,188 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>SFDC Deployment Tracker (Web)</title>
+  <title>Salesforce Deployment & Test Monitor</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <style>
     body {
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-      margin: 18px;
-      background: #0b0f14;
-      color: #e6edf3;
+      margin: 24px;
+      background: #f7f8fa;
+      color: #111;
     }
-    h1 { margin: 0; font-size: 18px; }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 22px;
+    }
 
     .topbar {
       display: flex;
-      justify-content: space-between;
-      gap: 12px;
       align-items: center;
-      padding: 10px 12px;
-      border: 1px solid #1f2a37;
-      border-radius: 12px;
-      background: #0f1620;
-    }
-    .pills { display: flex; gap: 8px; flex-wrap: wrap; }
-    .pill {
-      padding: 4px 10px;
-      border: 1px solid #223044;
-      border-radius: 999px;
-      font-size: 12px;
-      color: #c9d1d9;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
     }
 
-    .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; align-items: center; }
-
-    button, select, input {
-      background: #0f1620;
-      color: #e6edf3;
-      border: 1px solid #223044;
-      border-radius: 10px;
-      padding: 8px 10px;
-    }
-    button { cursor: pointer; }
-    button:hover { border-color: #3a4a63; }
-    input { min-width: 280px; }
-
-    .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-    .tab {
-      padding: 8px 10px;
-      border: 1px solid #223044;
-      border-radius: 10px;
+    button {
+      padding: 6px 10px;
+      border: 1px solid #ccc;
+      background: #fff;
+      border-radius: 6px;
       cursor: pointer;
-      background: #0f1620;
     }
-    .tab.active { border-color: #7aa2f7; }
 
-    .grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 12px; margin-top: 12px; }
-
-    .card {
-      border: 1px solid #1f2a37;
-      border-radius: 12px;
-      background: #0f1620;
-      padding: 10px;
-      min-height: 160px;
+    button:hover {
+      background: #f0f0f0;
     }
-    .card h2 { margin: 0 0 8px; font-size: 14px; color: #c9d1d9; }
 
-    table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #1f2a37; vertical-align: top; }
-    th { color: #c9d1d9; font-weight: 600; }
+    .pill {
+      padding: 4px 8px;
+      border-radius: 999px;
+      background: #e5e7eb;
+      font-size: 12px;
+    }
 
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
-    .muted { color: #8b949e; }
+    .tabs {
+      display: flex;
+      gap: 6px;
+      margin: 16px 0 8px;
+    }
 
-    .status.good { color: #3fb950; }
-    .status.warn { color: #d29922; }
-    .status.bad  { color: #f85149; }
+    .tab {
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      background: #fff;
+      cursor: pointer;
+      font-size: 14px;
+    }
 
-    pre { white-space: pre-wrap; word-break: break-word; margin: 0; font-size: 12px; color: #e6edf3; }
+    .tab:hover {
+      background: #f0f0f0;
+    }
 
-    .controls { margin-top: 10px; }
+    .panel {
+      background: #fff;
+      border: 1px solid #ddd;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 16px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th, td {
+      border-bottom: 1px solid #eee;
+      padding: 6px 8px;
+      text-align: left;
+      white-space: nowrap;
+    }
+
+    th {
+      background: #fafafa;
+      font-weight: 600;
+    }
+
+    pre {
+      background: #0f172a;
+      color: #e5e7eb;
+      padding: 12px;
+      border-radius: 8px;
+      overflow: auto;
+      font-size: 12px;
+      margin: 0;
+    }
+
+    .footer {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    @media (max-width: 900px) {
+      .footer {
+        grid-template-columns: 1fr;
+      }
+    }
   </style>
 </head>
 
 <body>
-  <div class="topbar">
-    <div>
-      <h1>SFDC Deployment Tracker (Web)</h1>
-      <div class="pills">
-        <div class="pill">Org: <span id="orgPill" class="mono">Not connected</span></div>
-        <div class="pill">API: <span id="apiPill" class="mono">—</span></div>
-      </div>
-    </div>
+  <h1>Salesforce Deployment & Apex Test Monitor</h1>
 
-    <div class="row" style="margin-top:0;">
-      <button id="loginBtn">Login</button>
-      <button id="logoutBtn">Logout</button>
-      <button id="refreshBtn">Refresh</button>
-      <button id="clearStorageBtn">Clear storage</button>
-    </div>
+  <div class="topbar">
+    <button id="loginBtn">Login</button>
+    <button id="logoutBtn">Logout</button>
+    <span class="pill" id="orgPill">Not connected</span>
+    <span class="pill" id="apiPill">—</span>
   </div>
 
   <div class="tabs">
-    <button id="tabDeployments" class="tab active">Deployments</button>
-    <button id="tabPackages" class="tab">Packages</button>
-    <button id="tabPackageHistory" class="tab">Package install history</button>
-    <button id="tabDeployDetails" class="tab">Deploy details</button>
+    <button class="tab" id="tabDeployments">Deployments</button>
+    <button class="tab" id="tabTests">Apex Tests</button>
   </div>
 
-  <div id="deploymentsControls" class="controls">
-    <div class="row">
-      <label class="muted">Auto-refresh</label>
-      <select id="pollInterval">
-        <option value="0">Off</option>
-        <option value="5">5s</option>
-        <option value="10">10s</option>
-        <option value="30" selected>30s</option>
-        <option value="60">60s</option>
-      </select>
-
-      <label class="muted">Show</label>
-      <select id="deployFilter">
-        <option value="all" selected>All</option>
-        <option value="active">Active only</option>
-        <option value="failed">Failed</option>
-        <option value="checkonly">Check only</option>
-        <option value="real">Real deploys</option>
-      </select>
-
-      <label class="muted">Limit</label>
-      <select id="deployLimit">
-        <option value="10">10</option>
-        <option value="20" selected>20</option>
-        <option value="50">50</option>
-        <option value="100">100</option>
-      </select>
-
-      <input id="deploySearch" placeholder="Search status/type/user/id..." />
-    </div>
+  <!-- Deployments -->
+  <div class="panel" id="deploymentsPanel">
+    <h3>Deployments</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>User</th>
+          <th>Type</th>
+          <th>Created</th>
+          <th>Started</th>
+          <th>Completed</th>
+          <th>Queue</th>
+          <th>Run</th>
+          <th>Total</th>
+          <th>Id</th>
+        </tr>
+      </thead>
+      <tbody id="deploymentsTbody">
+        <tr><td colspan="10">No data loaded.</td></tr>
+      </tbody>
+    </table>
   </div>
 
-  <div id="packagesControls" class="controls" style="display:none;">
-    <div class="row">
-      <input id="pkgSearch" placeholder="Search packages..." />
-      <button id="refreshPackagesBtn">Refresh packages</button>
-    </div>
+  <!-- Apex Tests -->
+  <div class="panel" id="testsPanel" style="display:none">
+    <h3>Apex Test Runs</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>User</th>
+          <th>Started</th>
+          <th>Completed</th>
+          <th>Duration</th>
+          <th>Methods Passed</th>
+          <th>Methods Failed</th>
+          <th>Run Id</th>
+        </tr>
+      </thead>
+      <tbody id="testsTbody">
+        <tr><td colspan="8">No data loaded.</td></tr>
+      </tbody>
+    </table>
   </div>
 
-  <div id="packageHistoryControls" class="controls" style="display:none;">
-    <div class="row">
-      <button id="discoverHistoryBtn">Discover history objects</button>
-      <button id="refreshHistoryBtn">Refresh history</button>
+  <div class="footer">
+    <div class="panel">
+      <h3>Selected / Status</h3>
+      <pre id="statusPre">Ready.</pre>
     </div>
-  </div>
-
-  <div id="deployDetailsControls" class="controls" style="display:none;">
-    <div class="row">
-      <input id="metadataDeployIdInput" placeholder="Paste Metadata deploy async id..." />
-      <button id="fetchDeployDetailsBtn">Fetch deploy details</button>
-    </div>
-  </div>
-
-  <div class="grid">
-    <div class="card">
-      <h2>Results</h2>
-
-      <div id="deploymentsPanel">
-        <table>
-          <thead>
-            <tr>
-              <th>Status</th>
-              <th>User</th>
-              <th>Type</th>
-              <th>Created</th>
-              <th>Started</th>
-              <th>Completed</th>
-              <th>Queue</th>
-              <th>Run</th>
-              <th>Total</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody id="deploymentsTbody">
-            <tr><td class="muted" colspan="10">Ready.</td></tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div id="packagesPanel" style="display:none;">
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Namespace</th>
-              <th>Version</th>
-            </tr>
-          </thead>
-          <tbody id="packagesTbody">
-            <tr><td class="muted" colspan="3">Open Packages tab and click refresh.</td></tr>
-          </tbody>
-        </table>
-      </div>
-
-      <div id="packageHistoryPanel" style="display:none;">
-        <pre id="packageHistoryPre">Open Package install history tab and click Discover.</pre>
-      </div>
-
-      <div id="deployDetailsPanel" style="display:none;">
-        <pre id="deployDetailsPre">Paste a Metadata deploy async id and click Fetch.</pre>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2>Selected / Log</h2>
-      <pre id="selectedPre">Nothing selected.</pre>
-      <div style="height:10px"></div>
-      <pre id="logPre">Ready.</pre>
+    <div class="panel">
+      <h3>Log</h3>
+      <pre id="logPre"></pre>
     </div>
   </div>
 
