@@ -4,13 +4,27 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>SFDC Deployment Tracker (Web)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 24px; }
+    h1 { margin: 0 0 12px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+    button { padding: 8px 12px; cursor: pointer; }
+    pre { background: #111; color: #eee; padding: 12px; border-radius: 8px; overflow: auto; }
+    .hint { color: #555; font-size: 14px; margin-top: 8px; }
+  </style>
 </head>
 <body>
   <h1>SFDC Deployment Tracker (Web)</h1>
 
-  <div>
+  <div class="row">
     <button id="loginBtn">Login</button>
     <button id="logoutBtn">Logout</button>
+    <button id="meBtn">Call /userinfo</button>
+    <button id="orgBtn">Call /services/data (versions)</button>
+  </div>
+
+  <div class="hint">
+    Tip: If login succeeds, you’ll see “Logged in ✅ …”. Then try the API call buttons.
   </div>
 
   <pre id="status">Not logged in</pre>
