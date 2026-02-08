@@ -1,607 +1,332 @@
-const BUILD = Auth.BUILD;
+// ====== CONFIG (edit these) ======
+const CLIENT_ID = "3MVG9YFqzc_KnL.wada6.pbgp4zDPc8T6u6uR6srOVo1fS7XOD_kHsrDH_QurZzXeEgwzWBU365_xXQ54mMNn";
+const LOGIN_DOMAIN = "https://gearsetcom-4bf-dev-ed.develop.my.salesforce.com"; // your org My Domain
+// =================================
 
-let pollTimer = null;
-let inFlight = false;
-let lastPollSkipped = false;
+// Build label
+const BUILD = "2026-02-08.2";
 
-let lastDeployments = [];
-let lastTestRuns = [];
-let deployToTest = new Map();
+// Storage keys
+const TOKEN_KEY = "sf_token";
+const API_VER_KEY = "sf_api_version";
 
-function setLastRefreshed(){
-  Auth.setText("lastRefreshed", `Last refreshed: ${new Date().toISOString().replace("T"," ").replace("Z","Z")}`);
+// Default API version
+const DEFAULT_API_VERSION = "65.0";
+
+/* -------------------- Helpers -------------------- */
+function $(id){ return document.getElementById(id); }
+
+function nowIso(){ return new Date().toISOString(); }
+
+function setText(id, text){
+  const el = $(id);
+  if (el) el.textContent = text;
 }
 
-function setLastRequest(text){
-  Auth.setText("lastRequest", `Last request: ${text}`);
+function showBanner(message){
+  const b = $("authBanner");
+  if (!b) return;
+  b.textContent = message || "";
+  b.style.display = message ? "block" : "none";
 }
 
-function setBusy(isBusy, label=null){
-  inFlight = isBusy;
-  const pill = document.getElementById("busyPill");
-  if (pill) pill.textContent = isBusy ? (label || "Working…") : "Idle";
-  ["refreshBtn","refreshPackagesBtn","refreshTestsBtn"].forEach(id => {
-    const b = document.getElementById(id);
-    if (b) b.disabled = !!isBusy;
+function log(msg){
+  const el = $("logPre");
+  if (!el) return;
+  el.textContent = `[${nowIso()}] ${msg}\n` + el.textContent;
+}
+
+function setSelected(objOrText){
+  const el = $("selectedPre");
+  if (!el) return;
+  el.textContent = typeof objOrText === "string" ? objOrText : JSON.stringify(objOrText, null, 2);
+}
+
+function getRedirectUri(){
+  return window.location.origin + window.location.pathname;
+}
+
+/* -------------------- API version selection -------------------- */
+function getApiVersion(){
+  return localStorage.getItem(API_VER_KEY) || DEFAULT_API_VERSION;
+}
+
+function setApiVersion(v){
+  localStorage.setItem(API_VER_KEY, v);
+  setText("apiPill", `v${v}`);
+}
+
+function wireApiVersionSelect(){
+  const sel = $("apiVersionSelect");
+  if (!sel) return;
+
+  // populate some common versions (adjust if you want)
+  const versions = ["58.0","59.0","60.0","61.0","62.0","63.0","64.0","65.0"];
+  sel.innerHTML = versions.map(v => `<option value="${v}">${v}</option>`).join("");
+  sel.value = getApiVersion();
+
+  sel.addEventListener("change", () => {
+    setApiVersion(sel.value);
+    log(`API version set to v${sel.value}`);
   });
+
+  setText("apiPill", `v${getApiVersion()}`);
 }
 
-function stopPolling(){
-  if (pollTimer){
-    clearInterval(pollTimer);
-    pollTimer = null;
-  }
+/* -------------------- Storage -------------------- */
+function saveToken(token){ localStorage.setItem(TOKEN_KEY, JSON.stringify(token)); }
+function loadToken(){
+  const raw = localStorage.getItem(TOKEN_KEY);
+  return raw ? JSON.parse(raw) : null;
+}
+function clearToken(){ localStorage.removeItem(TOKEN_KEY); }
+
+/* -------------------- PKCE helpers -------------------- */
+function base64UrlEncode(bytes){
+  let bin = "";
+  bytes.forEach(b => bin += String.fromCharCode(b));
+  return btoa(bin).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
 }
 
-function startPolling(){
-  stopPolling();
-  const seconds = Number(document.getElementById("pollInterval")?.value || 0);
-  if (!seconds){
-    Auth.log("Auto-refresh disabled.");
+async function sha256Base64Url(text){
+  const data = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return base64UrlEncode(new Uint8Array(digest));
+}
+
+function randomString(length=64){
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  return Array.from(bytes, b => chars[b % chars.length]).join("");
+}
+
+/* -------------------- OAuth (PKCE) -------------------- */
+async function login(){
+  if (!CLIENT_ID) {
+    alert("Missing CLIENT_ID in auth.js");
     return;
   }
-  pollTimer = setInterval(async () => {
-    if (inFlight){
-      lastPollSkipped = true;
-      return;
-    }
-    lastPollSkipped = false;
-    await refreshActiveTab(true);
-  }, seconds * 1000);
-  Auth.log(`Auto-refresh enabled: every ${seconds}s`);
+
+  const redirectUri = getRedirectUri();
+
+  const verifier = randomString(96);
+  const challenge = await sha256Base64Url(verifier);
+  sessionStorage.setItem("pkce_verifier", verifier);
+
+  const state = randomString(24);
+  sessionStorage.setItem("oauth_state", state);
+
+  const authUrl = new URL(`${LOGIN_DOMAIN}/services/oauth2/authorize`);
+  authUrl.searchParams.set("response_type","code");
+  authUrl.searchParams.set("client_id", CLIENT_ID);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("scope","refresh_token full");
+  authUrl.searchParams.set("state", state);
+  authUrl.searchParams.set("code_challenge", challenge);
+  authUrl.searchParams.set("code_challenge_method","S256");
+
+  window.location.href = authUrl.toString();
 }
 
-/* -------------------- Tab switching -------------------- */
-function show(el, on){ if (el) el.style.display = on ? "" : "none"; }
+async function handleRedirectIfPresent(){
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const error = url.searchParams.get("error");
+  const errorDesc = url.searchParams.get("error_description");
 
-function setPanelVisible(id, on){
-  const el = document.getElementById(id);
-  if (el) el.style.display = on ? "" : "none";
-}
-
-function setResultsView(view){
-  show(document.getElementById("deploymentsTableWrap"), view==="deployments");
-  show(document.getElementById("testsTableWrap"), view==="tests");
-  show(document.getElementById("packagesTableWrap"), view==="packages");
-}
-
-function showTab(tab){
-  const tabs = ["tabDeployments","tabApexTests","tabPackages"];
-  tabs.forEach(id => document.getElementById(id)?.classList.remove("active"));
-
-  if (tab==="deployments") document.getElementById("tabDeployments")?.classList.add("active");
-  if (tab==="tests") document.getElementById("tabApexTests")?.classList.add("active");
-  if (tab==="packages") document.getElementById("tabPackages")?.classList.add("active");
-
-  setPanelVisible("deploymentsControls", tab==="deployments");
-  setPanelVisible("apexTestsControls", tab==="tests");
-  setPanelVisible("packagesControls", tab==="packages");
-
-  setResultsView(tab);
-
-  const title = document.getElementById("resultsTitle");
-  if (title){
-    title.textContent =
-      tab==="deployments" ? "Results (Deployments)" :
-      tab==="tests" ? "Results (Apex tests)" :
-      "Results (Packages)";
+  if (error){
+    showBanner(`OAuth error: ${error}${errorDesc ? " - " + errorDesc : ""}`);
+    log(`OAuth error: ${error}${errorDesc ? " - " + errorDesc : ""}`);
+    return false;
   }
-}
+  if (!code) return false;
 
-/* -------------------- Formatting -------------------- */
-function parseDate(s){
-  if (!s) return null;
-  const d = new Date(s);
-  return Number.isFinite(d.getTime()) ? d : null;
-}
-function fmtTime(d){
-  if (!d) return "—";
-  return d.toISOString().replace("T"," ").replace("Z","Z");
-}
-function fmtDuration(ms){
-  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
-  const sec = Math.floor(ms/1000);
-  const h = Math.floor(sec/3600);
-  const m = Math.floor((sec%3600)/60);
-  const s = sec%60;
-  return `${h}h ${m}m ${s}s`;
-}
-function statusClass(status){
-  const s = String(status||"").toLowerCase();
-  if (["succeeded","success","completed"].some(k => s.includes(k))) return "good";
-  if (["failed","error"].some(k => s.includes(k))) return "bad";
-  if (["inprogress","queued","pending","validat","running","processing"].some(k => s.includes(k))) return "warn";
-  return "";
-}
-function correlationBadge(c){
-  if (!c) return `<span class="badge muted">Unknown</span>`;
-  const out = c.outcome || "Unknown";
-  const cls = /fail/i.test(out) ? "bad" : /pass|succeed/i.test(out) ? "good" : "warn";
-  return `<span class="badge"><span class="status ${cls}">${out}</span><span class="muted">(${c.confidence||"Low"})</span></span>`;
-}
-
-/* -------------------- Filters -------------------- */
-function passesDeployFilter(r){
-  const filter = document.getElementById("deployFilter")?.value || "all";
-  const status = String(r.Status||"");
-  const checkOnly = !!r.CheckOnly;
-
-  if (filter==="active"){
-    const active = ["InProgress","Pending","Queued","Processing","Running","Validating"];
-    return active.includes(status);
+  const expected = sessionStorage.getItem("oauth_state");
+  if (!expected || state !== expected){
+    showBanner("State mismatch. Aborting.");
+    log("State mismatch. Aborting.");
+    return false;
   }
-  if (filter==="failed") return status.toLowerCase().includes("fail") || status.toLowerCase().includes("error");
-  if (filter==="checkonly") return checkOnly;
-  if (filter==="real") return !checkOnly;
+
+  const verifier = sessionStorage.getItem("pkce_verifier");
+  if (!verifier){
+    showBanner("Missing PKCE verifier. Aborting.");
+    log("Missing PKCE verifier. Aborting.");
+    return false;
+  }
+
+  // clean URL
+  url.searchParams.delete("code");
+  url.searchParams.delete("state");
+  window.history.replaceState({}, document.title, url.toString());
+
+  // token exchange
+  const tokenUrl = `${LOGIN_DOMAIN}/services/oauth2/token`;
+  const body = new URLSearchParams();
+  body.set("grant_type","authorization_code");
+  body.set("client_id", CLIENT_ID);
+  body.set("redirect_uri", getRedirectUri());
+  body.set("code", code);
+  body.set("code_verifier", verifier);
+
+  const resp = await fetch(tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type":"application/x-www-form-urlencoded" },
+    body: body.toString()
+  });
+
+  const json = await resp.json().catch(() => null);
+  sessionStorage.removeItem("pkce_verifier");
+  sessionStorage.removeItem("oauth_state");
+
+  if (!resp.ok){
+    const msg = json?.error_description || json?.error || `HTTP ${resp.status}`;
+    showBanner(`Token error: ${msg}`);
+    log(`Token exchange failed: ${msg}`);
+    return false;
+  }
+
+  saveToken(json);
+  showBanner("");
+
+  setText("orgPill", json.instance_url || "Connected");
+  setText("buildPill", BUILD);
+  setText("apiPill", `v${getApiVersion()}`);
+
+  log("Logged in. Token stored (includes refresh_token if your Connected App allows it).");
+  setSelected(redactTokenForDisplay(json));
   return true;
 }
 
-function passesDeploySearch(r){
-  const q = (document.getElementById("deploySearch")?.value || "").trim().toLowerCase();
-  if (!q) return true;
-  const blob = [r.Status,r.Type,r.CreatedBy?.Name,r.ErrorStatusCode,r.ErrorMessage,r.Id].filter(Boolean).join(" ").toLowerCase();
-  return blob.includes(q);
+function redactTokenForDisplay(token){
+  if (!token) return token;
+  const t = { ...token };
+  if (t.access_token) t.access_token = "(redacted)";
+  if (t.refresh_token) t.refresh_token = "(redacted)";
+  if (t.id_token) t.id_token = "(redacted)";
+  return t;
 }
 
-function passesTestFilter(r){
-  const f = document.getElementById("testFilter")?.value || "all";
-  const outcome = String(r.Outcome || r.Status || "").toLowerCase();
-  if (f==="failed") return /(fail|error)/i.test(outcome) || Number(r.Failures||0)>0;
-  if (f==="passed") return /(pass|success)/i.test(outcome) && Number(r.Failures||0)===0;
-  return true;
+async function logout(){
+  clearToken();
+  showBanner("");
+  setText("orgPill", "Not connected");
+  setSelected("Nothing selected.");
+  log("Logged out.");
 }
 
-function passesTestSearch(r){
-  const q = (document.getElementById("testSearch")?.value || "").trim().toLowerCase();
-  if (!q) return true;
-  const blob = [r.Id,r.Outcome,r.Status,r.CreatedBy?.Name].filter(Boolean).join(" ").toLowerCase();
-  return blob.includes(q);
-}
-
-/* -------------------- Render: Deployments -------------------- */
-function renderDeploymentsTable(rows){
-  const tbody = document.getElementById("deploymentsTbody");
-  if (!tbody) return;
-
-  if (!rows.length){
-    tbody.innerHTML = `<tr><td class="muted small" colspan="14">No deployments match the current filter/search.</td></tr>`;
-    return;
+/* -------------------- Refresh token (401 fix) -------------------- */
+async function refreshAccessToken(){
+  const t = loadToken();
+  if (!t?.refresh_token){
+    return { ok: false, reason: "no_refresh_token" };
   }
 
-  tbody.innerHTML = rows.map(r => {
-    const now = new Date();
-    const created = parseDate(r.CreatedDate);
-    const started = parseDate(r.StartDate) || created;
-    const completed = parseDate(r.CompletedDate);
+  const tokenUrl = `${LOGIN_DOMAIN}/services/oauth2/token`;
+  const body = new URLSearchParams();
+  body.set("grant_type","refresh_token");
+  body.set("client_id", CLIENT_ID);
+  body.set("refresh_token", t.refresh_token);
 
-    const queueMs = created && started ? started - created : null;
-    const runMs = started ? (completed ? completed - started : now - started) : null;
-    const totalMs = created ? (completed ? completed - created : now - created) : null;
-
-    const st = r.Status || "—";
-    const stClass = statusClass(st);
-    const corr = deployToTest.get(r.Id) || null;
-
-    return `
-      <tr>
-        <td class="status ${stClass}">${st}</td>
-        <td>${r.CreatedBy?.Name || "—"}</td>
-        <td>${r.Type || "—"}${r.CheckOnly ? ' <span class="muted">(checkOnly)</span>' : ""}</td>
-        <td class="mono">${fmtTime(created)}</td>
-        <td class="mono">${fmtTime(parseDate(r.StartDate))}</td>
-        <td class="mono">${fmtTime(completed)}</td>
-        <td class="mono">${fmtDuration(queueMs)}</td>
-        <td class="mono">${fmtDuration(runMs)}</td>
-        <td class="mono">${fmtDuration(totalMs)}</td>
-        <td>${correlationBadge(corr)}</td>
-        <td class="mono">${corr?.failures ?? "—"}</td>
-        <td class="mono">${fmtDuration(corr?.durationMs ?? null)}</td>
-        <td class="mono">${r.Id}</td>
-        <td>
-          <div class="rowActions">
-            <button class="btnSmall" data-action="selectDeploy" data-id="${r.Id}">Details</button>
-            <button class="btnSmall" data-action="copy" data-text="${r.Id}">Copy id</button>
-            ${corr?.runId ? `<button class="btnSmall" data-action="selectTestRun" data-id="${corr.runId}">Test run</button>` : ""}
-          </div>
-        </td>
-      </tr>
-    `.trim();
-  }).join("\n");
-
-  tbody.querySelectorAll("button[data-action]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const action = btn.getAttribute("data-action");
-      const id = btn.getAttribute("data-id");
-      const text = btn.getAttribute("data-text");
-
-      if (action==="copy"){
-        try { await navigator.clipboard.writeText(text || ""); Auth.log("Copied to clipboard."); }
-        catch { Auth.log("Clipboard copy failed."); }
-        return;
-      }
-
-      if (action==="selectDeploy"){
-        const rec = rows.find(x => x.Id === id);
-        if (!rec) return;
-        Auth.setSelected({
-          kind: "DeployRequest",
-          Id: rec.Id,
-          Status: rec.Status,
-          Type: rec.Type,
-          CheckOnly: rec.CheckOnly,
-          CreatedBy: rec.CreatedBy?.Name,
-          CreatedDate: rec.CreatedDate,
-          StartDate: rec.StartDate,
-          CompletedDate: rec.CompletedDate,
-          ErrorStatusCode: rec.ErrorStatusCode,
-          ErrorMessage: rec.ErrorMessage,
-          CorrelatedTest: deployToTest.get(rec.Id) || null
-        });
-        return;
-      }
-
-      if (action==="selectTestRun"){
-        showTab("tests");
-        await refreshTests(false);
-        await selectTestRunAndFailures(id);
-      }
-    });
+  const resp = await fetch(tokenUrl, {
+    method:"POST",
+    headers:{ "Content-Type":"application/x-www-form-urlencoded" },
+    body: body.toString()
   });
+
+  const json = await resp.json().catch(() => null);
+  if (!resp.ok){
+    const msg = json?.error_description || json?.error || `HTTP ${resp.status}`;
+    log(`Refresh failed: ${msg}`);
+    return { ok:false, reason: msg };
+  }
+
+  // Salesforce typically returns a new access_token + instance_url; refresh_token may be omitted (keep old)
+  const merged = { ...t, ...json };
+  if (!merged.refresh_token) merged.refresh_token = t.refresh_token;
+
+  saveToken(merged);
+  setText("orgPill", merged.instance_url || "Connected");
+  log("Access token refreshed.");
+  return { ok:true, token: merged };
 }
 
-/* -------------------- Data: Deployments -------------------- */
-async function fetchDeployments(){
-  const limit = Number(document.getElementById("deployLimit")?.value || 20);
-  const soql = `
-    SELECT Id, Status, Type, CheckOnly,
-           CreatedDate, StartDate, CompletedDate,
-           CreatedBy.Name, CreatedById,
-           ErrorStatusCode, ErrorMessage
-    FROM DeployRequest
-    ORDER BY CreatedDate DESC
-    LIMIT ${limit}
-  `.trim();
-
-  setBusy(true, "Deploys…");
-  setLastRequest(`tooling query DeployRequest (limit ${limit})`);
-  const { ok, status, json } = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling:true });
-  setBusy(false);
-
-  if (!ok){
-    Auth.setSelected(`DeployRequest query failed (HTTP ${status}):\n${Auth.extractSfError(json)}`);
-    return [];
-  }
-
-  const recs = json?.records || [];
-  lastDeployments = recs;
-
-  if (!lastTestRuns.length) await refreshTests(true);
-  correlateDeploymentsToTests(recs, lastTestRuns);
-
-  const filtered = recs.filter(passesDeployFilter).filter(passesDeploySearch);
-  renderDeploymentsTable(filtered);
-  return filtered;
+/* -------------------- REST fetch wrapper -------------------- */
+function requireToken(){
+  const t = loadToken();
+  if (!t?.access_token || !t?.instance_url) return null;
+  return t;
 }
 
-/* -------------------- Tests -------------------- */
-function testOutcomeClass(outcome){
-  const s = String(outcome||"").toLowerCase();
-  if (/(pass|success)/i.test(s)) return "good";
-  if (/(fail|error)/i.test(s)) return "bad";
-  return "warn";
+function extractSfError(json){
+  if (!json) return "Unknown error";
+  if (Array.isArray(json) && json[0]?.message) return json[0].message;
+  if (json?.message) return json.message;
+  if (json?.error_description) return json.error_description;
+  if (json?.error) return json.error;
+  return JSON.stringify(json);
 }
 
-function renderTestsTable(rows){
-  const tbody = document.getElementById("testsTbody");
-  if (!tbody) return;
-
-  if (!rows.length){
-    tbody.innerHTML = `<tr><td class="muted small" colspan="9">No test runs match the current filter/search.</td></tr>`;
-    return;
+async function sfFetch(path, { tooling=false, method="GET", headers={}, body=null, retry=true } = {}){
+  const t = requireToken();
+  if (!t){
+    showBanner("Not logged in. Click Login.");
+    return { ok:false, status:0, json:null };
   }
 
-  tbody.innerHTML = rows.map(r => {
-    const started = parseDate(r.StartTime);
-    const ended = parseDate(r.EndTime);
-    const dur = started ? ((ended ? ended - started : new Date() - started)) : null;
-    const outcome = r.Outcome || r.Status || "—";
-    const cls = testOutcomeClass(outcome);
+  const v = getApiVersion();
+  const base = tooling
+    ? `${t.instance_url}/services/data/v${v}/tooling`
+    : `${t.instance_url}/services/data/v${v}`;
+  const url = `${base}${path}`;
 
-    return `
-      <tr>
-        <td class="status ${cls}">${outcome}</td>
-        <td>${r.CreatedBy?.Name || "—"}</td>
-        <td class="mono">${fmtTime(started)}</td>
-        <td class="mono">${fmtTime(ended)}</td>
-        <td class="mono">${fmtDuration(dur)}</td>
-        <td class="mono">${r.TestsRan ?? "—"}</td>
-        <td class="mono">${r.Failures ?? "—"}</td>
-        <td class="mono">${r.Id}</td>
-        <td>
-          <div class="rowActions">
-            <button class="btnSmall" data-action="selectRun" data-id="${r.Id}">Details</button>
-            <button class="btnSmall" data-action="loadFailures" data-id="${r.Id}">Failures</button>
-            <button class="btnSmall" data-action="copy" data-text="${r.Id}">Copy</button>
-          </div>
-        </td>
-      </tr>
-    `.trim();
-  }).join("\n");
-
-  tbody.querySelectorAll("button[data-action]").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const action = btn.getAttribute("data-action");
-      const id = btn.getAttribute("data-id");
-      const text = btn.getAttribute("data-text");
-
-      if (action==="copy"){
-        try { await navigator.clipboard.writeText(text || ""); Auth.log("Copied to clipboard."); }
-        catch { Auth.log("Clipboard copy failed."); }
-        return;
-      }
-      if (action==="selectRun"){
-        const rec = rows.find(x => x.Id === id);
-        if (!rec) return;
-        Auth.setSelected({ kind:"ApexTestRun", ...rec });
-        return;
-      }
-      if (action==="loadFailures"){
-        await selectTestRunAndFailures(id);
-      }
-    });
-  });
-}
-
-async function refreshTests(silent=false){
-  const limit = Number(document.getElementById("testLimit")?.value || 20);
-  const soql = `
-    SELECT Id, Status, Outcome, StartTime, EndTime, TestsRan, Failures,
-           CreatedBy.Name, CreatedById
-    FROM ApexTestRun
-    ORDER BY StartTime DESC
-    LIMIT ${limit}
-  `.trim();
-
-  if (!silent){
-    setBusy(true, "Tests…");
-    setLastRequest(`tooling query ApexTestRun (limit ${limit})`);
-  }
-  const { ok, status, json } = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling:true });
-  if (!silent) setBusy(false);
-
-  if (!ok){
-    if (!silent) Auth.setSelected(`ApexTestRun query failed (HTTP ${status}):\n${Auth.extractSfError(json)}`);
-    return [];
-  }
-
-  const recs = json?.records || [];
-  lastTestRuns = recs;
-
-  if (lastDeployments.length){
-    correlateDeploymentsToTests(lastDeployments, lastTestRuns);
-    if (document.getElementById("tabDeployments")?.classList.contains("active")){
-      const filtered = lastDeployments.filter(passesDeployFilter).filter(passesDeploySearch);
-      renderDeploymentsTable(filtered);
-    }
-  }
-
-  const filtered = recs.filter(passesTestFilter).filter(passesTestSearch);
-  if (!silent) renderTestsTable(filtered);
-  return filtered;
-}
-
-async function selectTestRunAndFailures(runId){
-  const run = lastTestRuns.find(x => x.Id === runId) || { Id: runId };
-  Auth.setSelected({ kind:"ApexTestRun", ...run, loadingFailures:true });
-
-  const soql = `
-    SELECT Id, Outcome, ApexClass.Name, MethodName, Message, StackTrace, RunTime
-    FROM ApexTestResult
-    WHERE ApexTestRunId = '${runId}'
-    AND (Outcome != 'Pass' OR Message != null)
-    ORDER BY RunTime DESC
-    LIMIT 50
-  `.trim();
-
-  setBusy(true, "Failures…");
-  setLastRequest(`tooling query ApexTestResult (run ${runId})`);
-  const { ok, status, json } = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling:true });
-  setBusy(false);
-
-  if (!ok){
-    Auth.setSelected(`ApexTestResult query failed (HTTP ${status}):\n${Auth.extractSfError(json)}`);
-    return;
-  }
-
-  const failures = json?.records || [];
-  Auth.setSelected({
-    kind:"ApexTestRun",
-    runId,
-    summary: {
-      outcome: run.Outcome || run.Status || "—",
-      testsRan: run.TestsRan,
-      failures: run.Failures,
-      start: run.StartTime,
-      end: run.EndTime
+  const resp = await fetch(url, {
+    method,
+    headers: {
+      Authorization: `Bearer ${t.access_token}`,
+      ...headers
     },
-    failureCount: failures.length,
-    failures: failures.map(f => ({
-      outcome: f.Outcome,
-      class: f.ApexClass?.Name,
-      method: f.MethodName,
-      message: f.Message,
-      runtimeMs: f.RunTime,
-      stack: f.StackTrace
-    }))
+    body
   });
 
-  Auth.log(`Loaded ${failures.length} failing/non-pass test results for run ${runId}.`);
-}
+  const json = await resp.json().catch(() => null);
 
-/* -------------------- Correlation -------------------- */
-function correlateDeploymentsToTests(deployments, testRuns){
-  deployToTest = new Map();
-
-  const runs = (testRuns||[]).map(r => {
-    const start = parseDate(r.StartTime);
-    const end = parseDate(r.EndTime);
-    const durMs = start ? ((end ? end - start : new Date() - start)) : null;
-    const failures = Number(r.Failures || 0);
-    const outcome = r.Outcome || r.Status || "Unknown";
-    return {
-      runId: r.Id,
-      start, end,
-      durationMs: durMs,
-      failures,
-      outcome,
-      createdById: r.CreatedById,
-      createdByName: r.CreatedBy?.Name
-    };
-  }).filter(x => x.start);
-
-  runs.sort((a,b) => b.start - a.start);
-
-  for (const d of deployments||[]){
-    const created = parseDate(d.CreatedDate);
-    const started = parseDate(d.StartDate) || created;
-    const completed = parseDate(d.CompletedDate);
-    if (!started) continue;
-
-    const windowMs = 10 * 60 * 1000;
-    const lo = new Date(started.getTime() - windowMs);
-    const hi = new Date((completed ? completed.getTime() : started.getTime()) + windowMs);
-    const userId = d.CreatedById;
-
-    let best = null;
-    for (const r of runs){
-      if (r.start < lo) break;
-      if (r.start > hi) continue;
-
-      let score = 0;
-      if (userId && r.createdById && userId === r.createdById) score += 3;
-
-      const dt = Math.abs(r.start - started);
-      if (dt < 2*60*1000) score += 3;
-      else if (dt < 5*60*1000) score += 2;
-      else score += 1;
-
-      if (r.end) score += 1;
-
-      if (!best || score > best.score) best = { ...r, score };
+  if (resp.status === 401 && retry){
+    log("HTTP 401 received. Attempting refresh_token flow…");
+    const r = await refreshAccessToken();
+    if (r.ok){
+      return sfFetch(path, { tooling, method, headers, body, retry:false });
     }
-    if (!best) continue;
-
-    const confidence = best.score >= 6 ? "High" : best.score >= 4 ? "Medium" : "Low";
-    deployToTest.set(d.Id, {
-      runId: best.runId,
-      outcome: best.failures > 0 ? "Fail" : (String(best.outcome).match(/pass|success/i) ? "Pass" : best.outcome),
-      failures: best.failures,
-      durationMs: best.durationMs,
-      confidence
-    });
+    showBanner("Session expired/invalid. Click Login again.");
+    return { ok:false, status:401, json };
   }
 
-  Auth.log(`Correlation updated: ${deployToTest.size} deployments matched to test runs.`);
+  if (!resp.ok){
+    log(`SF request failed (HTTP ${resp.status}): ${extractSfError(json)}`);
+  }
+
+  return { ok: resp.ok, status: resp.status, json };
 }
 
-/* -------------------- Packages -------------------- */
-function pkgRowHtml(r){
-  const pkg = r.SubscriberPackage || {};
-  const ver = r.SubscriberPackageVersion || {};
-  const version = [ver.MajorVersion,ver.MinorVersion,ver.PatchVersion,ver.BuildNumber].filter(x => x!=null).join(".");
-  return `
-    <tr>
-      <td>${pkg.Name || "—"}</td>
-      <td class="mono">${pkg.NamespacePrefix || "—"}</td>
-      <td class="mono">${version || "—"}</td>
-    </tr>
-  `.trim();
-}
-
-async function fetchPackages(){
-  const soql = `
-    SELECT
-      Id,
-      SubscriberPackage.Name,
-      SubscriberPackage.NamespacePrefix,
-      SubscriberPackageVersion.MajorVersion,
-      SubscriberPackageVersion.MinorVersion,
-      SubscriberPackageVersion.PatchVersion,
-      SubscriberPackageVersion.BuildNumber
-    FROM InstalledSubscriberPackage
-    ORDER BY SubscriberPackage.Name
-    LIMIT 200
-  `.trim();
-
-  const tbody = document.getElementById("packagesTbody");
-  if (tbody) tbody.innerHTML = `<tr><td colspan="3" class="muted small">Loading…</td></tr>`;
-
-  setBusy(true, "Packages…");
-  setLastRequest("tooling query InstalledSubscriberPackage");
-  const { ok, status, json } = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling:true });
-  setBusy(false);
-
-  if (!ok){
-    Auth.log(`Packages query failed (HTTP ${status}): ${Auth.extractSfError(json)}`);
-    if (tbody) tbody.innerHTML = `<tr><td colspan="3" class="muted small">Failed to load packages.</td></tr>`;
-    Auth.setSelected(`Packages query failed:\n${Auth.extractSfError(json)}`);
-    return;
-  }
-
-  const recs = json?.records || [];
-  const q = (document.getElementById("pkgSearch")?.value || "").trim().toLowerCase();
-  const filtered = !q ? recs : recs.filter(r => {
-    const p = r.SubscriberPackage || {};
-    return `${p.Name||""} ${p.NamespacePrefix||""}`.toLowerCase().includes(q);
-  });
-
-  if (!filtered.length){
-    if (tbody) tbody.innerHTML = `<tr><td colspan="3" class="muted small">No packages match your search.</td></tr>`;
-    return;
-  }
-
-  if (tbody) tbody.innerHTML = filtered.map(pkgRowHtml).join("\n");
-  Auth.log(`Packages refreshed (${filtered.length} rows).`);
-}
-
-/* -------------------- Refresh orchestration -------------------- */
-async function refreshActiveTab(isPoll=false){
-  const active =
-    document.getElementById("tabDeployments")?.classList.contains("active") ? "deployments" :
-    document.getElementById("tabApexTests")?.classList.contains("active") ? "tests" :
-    "packages";
-
-  if (inFlight){
-    if (isPoll) lastPollSkipped = true;
-    return;
-  }
-
-  try{
-    if (active==="deployments"){
-      document.getElementById("deploymentsTbody").innerHTML = `<tr><td colspan="14" class="muted small">Loading…</td></tr>`;
-      await fetchDeployments();
-    } else if (active==="tests"){
-      document.getElementById("testsTbody").innerHTML = `<tr><td colspan="9" class="muted small">Loading…</td></tr>`;
-      await refreshTests(false);
-    } else {
-      await fetchPackages();
-    }
-    setLastRefreshed();
-    if (isPoll && lastPollSkipped) Auth.log("Polling: one tick was skipped due to in-flight request.");
-  } catch (e){
-    Auth.log(`Refresh error: ${e?.message || e}`);
-  }
-}
-
-/* -------------------- Wiring -------------------- */
-document.getElementById("loginBtn")?.addEventListener("click", Auth.login);
-document.getElementById("logoutBtn")?.addEventListener("click", Auth.logout);
-document.getElementById("refreshBtn")?.addEventListener("click", () => refreshActiveTab(false));
-
-document.getElementById("tabDeployments")?.addEventListener("click", async () => { showTab("deployments"); await refreshActiveTab(false); });
-document.getElementById("tabApexTests")?.addEventListener("click", async () => { showTab("tests"); await refreshActiveTab(false); });
-document.getElementById("tabPackages")?.addEventListener("click", async () => { showTab("packages"); await refreshActiveTab(false); });
-
-document.getElementById("pollInterval")?.addEventListener("change", startPolling);
-
-document.getElementById("deployFilter")?.addEventListener("change", () => refreshA
+/* -------------------- Exported to window -------------------- */
+window.Auth = {
+  BUILD,
+  CLIENT_ID,
+  LOGIN_DOMAIN,
+  login,
+  logout,
+  handleRedirectIfPresent,
+  loadToken,
+  redactTokenForDisplay,
+  sfFetch,
+  getApiVersion,
+  setApiVersion,
+  wireApiVersionSelect,
+  log,
+  setSelected,
+  setText,
+  showBanner,
+  extractSfError
+};
