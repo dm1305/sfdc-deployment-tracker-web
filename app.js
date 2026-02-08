@@ -1,206 +1,107 @@
-// ====== CONFIG (edit these) ======
-const CLIENT_ID = "PASTE_YOUR_CONSUMER_KEY_HERE";
-const LOGIN_DOMAIN = "https://gearsetcom-4bf-dev-ed.develop.my.salesforce.com"; // your sandbox My Domain
-// =================================
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SFDC Deployment Tracker (Web)</title>
 
-const TOKEN_KEY = "sf_token";
+  <style>
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      margin: 24px;
+      line-height: 1.4;
+    }
 
-/* ---------- PKCE + helpers ---------- */
+    h1 {
+      margin: 0 0 12px;
+    }
 
-function base64UrlEncode(bytes) {
-  let bin = "";
-  bytes.forEach(b => (bin += String.fromCharCode(b)));
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-}
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 12px 0;
+    }
 
-async function sha256Base64Url(text) {
-  const data = new TextEncoder().encode(text);
-  const digest = await crypto.subtle.digest("SHA-256", data);
-  return base64UrlEncode(new Uint8Array(digest));
-}
+    button {
+      padding: 8px 12px;
+      cursor: pointer;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      background: #f7f7f7;
+    }
 
-function randomString(length = 64) {
-  const bytes = new Uint8Array(length);
-  crypto.getRandomValues(bytes);
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-  return Array.from(bytes, b => chars[b % chars.length]).join("");
-}
+    button:hover {
+      background: #eee;
+    }
 
-/* ---------- storage + UI ---------- */
+    input {
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      min-width: 360px;
+    }
 
-function setStatus(msg) {
-  document.getElementById("status").textContent = msg;
-}
+    pre {
+      background: #111;
+      color: #eee;
+      padding: 12px;
+      border-radius: 8px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin-top: 16px;
+    }
 
-function saveToken(token) {
-  localStorage.setItem(TOKEN_KEY, JSON.stringify(token));
-}
+    .hint {
+      color: #555;
+      font-size: 14px;
+      margin-top: 8px;
+    }
+  </style>
+</head>
 
-function loadToken() {
-  const raw = localStorage.getItem(TOKEN_KEY);
-  return raw ? JSON.parse(raw) : null;
-}
+<body>
+  <h1>SFDC Deployment Tracker (Web)</h1>
 
-function clearToken() {
-  localStorage.removeItem(TOKEN_KEY);
-}
+  <!-- Auth + basic info -->
+  <div class="row">
+    <button id="loginBtn">Login</button>
+    <button id="logoutBtn">Logout</button>
+    <button id="tokenBtn">Token summary</button>
+    <button id="meBtn">Call /userinfo</button>
+  </div>
 
-function getRedirectUri() {
-  // GitHub Pages URL (same origin + path)
-  // e.g. https://dm1305.github.io/sfdc-deployment-tracker-web/
-  return window.location.origin + window.location.pathname;
-}
+  <!-- Deployment overview -->
+  <div class="row">
+    <button id="deploymentsBtn">List deployments</button>
+    <button id="activeDeploymentsBtn">List active deployments</button>
+  </div>
 
-/* ---------- OAuth ---------- */
+  <!-- Metadata deploy details -->
+  <div class="row">
+    <input
+      id="metadataDeployIdInput"
+      placeholder="Paste Metadata deploy id (async id)"
+    />
+    <button id="deployDetailsBtn">
+      Deploy details (components)
+    </button>
+  </div>
 
-async function login() {
-  if (!CLIENT_ID || CLIENT_ID.includes("PASTE_")) {
-    alert("Set CLIENT_ID in app.js first.");
-    return;
-  }
+  <div class="hint">
+    Flow:
+    <ol>
+      <li>Click <b>Login</b> and authenticate with Salesforce.</li>
+      <li>Use <b>List deployments</b> to see recent org deployments.</li>
+      <li>If you have a Metadata deploy async id, paste it above and click
+          <b>Deploy details (components)</b> to see component names, types, counts,
+          and failures.</li>
+    </ol>
+  </div>
 
-  const redirectUri = getRedirectUri();
+  <pre id="status">Not logged in</pre>
 
-  // PKCE
-  const codeVerifier = randomString(96);
-  const codeChallenge = await sha256Base64Url(codeVerifier);
-  sessionStorage.setItem("pkce_verifier", codeVerifier);
-
-  const state = randomString(24);
-  sessionStorage.setItem("oauth_state", state);
-
-  const authUrl = new URL(`${LOGIN_DOMAIN}/services/oauth2/authorize`);
-  authUrl.searchParams.set("response_type", "code");
-  authUrl.searchParams.set("client_id", CLIENT_ID);
-  authUrl.searchParams.set("redirect_uri", redirectUri);
-  authUrl.searchParams.set("scope", "refresh_token full");
-  authUrl.searchParams.set("state", state);
-  authUrl.searchParams.set("code_challenge", codeChallenge);
-  authUrl.searchParams.set("code_challenge_method", "S256");
-
-  window.location.href = authUrl.toString();
-}
-
-async function handleRedirectIfPresent() {
-  const url = new URL(window.location.href);
-  const code = url.searchParams.get("code");
-  const state = url.searchParams.get("state");
-  const error = url.searchParams.get("error");
-  const errorDesc = url.searchParams.get("error_description");
-
-  if (error) {
-    setStatus(`OAuth error: ${error}${errorDesc ? " - " + errorDesc : ""}`);
-    return;
-  }
-
-  if (!code) return; // not returning from OAuth
-
-  const expectedState = sessionStorage.getItem("oauth_state");
-  if (!expectedState || state !== expectedState) {
-    setStatus("State mismatch. Aborting.");
-    return;
-  }
-
-  const verifier = sessionStorage.getItem("pkce_verifier");
-  if (!verifier) {
-    setStatus("Missing PKCE verifier. Aborting.");
-    return;
-  }
-
-  // Clean URL
-  url.searchParams.delete("code");
-  url.searchParams.delete("state");
-  window.history.replaceState({}, document.title, url.toString());
-
-  // Exchange code for token
-  const redirectUri = getRedirectUri();
-  const tokenUrl = `${LOGIN_DOMAIN}/services/oauth2/token`;
-
-  const body = new URLSearchParams();
-  body.set("grant_type", "authorization_code");
-  body.set("client_id", CLIENT_ID);
-  body.set("redirect_uri", redirectUri);
-  body.set("code", code);
-  body.set("code_verifier", verifier);
-
-  const resp = await fetch(tokenUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  });
-
-  const json = await resp.json().catch(() => null);
-  if (!resp.ok) {
-    setStatus(
-      `Token exchange failed: ${json?.error_description || json?.error || resp.status}`
-    );
-    return;
-  }
-
-  saveToken(json);
-  setStatus("Logged in ✅ Token stored in localStorage.\n" + JSON.stringify(json, null, 2));
-}
-
-async function logout() {
-  clearToken();
-  setStatus("Logged out.");
-}
-
-/* ---------- Salesforce API calls ---------- */
-
-async function callUserInfo() {
-  const token = loadToken();
-  if (!token?.access_token) {
-    setStatus("Not logged in. Click Login first.");
-    return;
-  }
-
-  const resp = await fetch(`${LOGIN_DOMAIN}/services/oauth2/userinfo`, {
-    headers: { Authorization: `Bearer ${token.access_token}` },
-  });
-
-  const json = await resp.json().catch(() => null);
-  if (!resp.ok) {
-    setStatus(`userinfo failed: ${json?.error || json?.message || resp.status}`);
-    return;
-  }
-
-  setStatus("userinfo ✅\n" + JSON.stringify(json, null, 2));
-}
-
-async function callVersions() {
-  const token = loadToken();
-  if (!token?.access_token) {
-    setStatus("Not logged in. Click Login first.");
-    return;
-  }
-
-  const resp = await fetch(`${token.instance_url}/services/data/`, {
-    headers: { Authorization: `Bearer ${token.access_token}` },
-  });
-
-  const json = await resp.json().catch(() => null);
-  if (!resp.ok) {
-    setStatus(`services/data failed: ${json?.error || json?.message || resp.status}`);
-    return;
-  }
-
-  setStatus("services/data ✅ (API versions)\n" + JSON.stringify(json, null, 2));
-}
-
-/* ---------- wire up UI ---------- */
-
-document.getElementById("loginBtn").addEventListener("click", login);
-document.getElementById("logoutBtn").addEventListener("click", logout);
-document.getElementById("meBtn").addEventListener("click", callUserInfo);
-document.getElementById("orgBtn").addEventListener("click", callVersions);
-
-/* ---------- init ---------- */
-
-(async function init() {
-  await handleRedirectIfPresent();
-  const token = loadToken();
-  if (token && !document.getElementById("status").textContent.includes("Logged in")) {
-    setStatus("Already logged in ✅ Token loaded from localStorage.");
-  }
-})();
+  <script src="app.js"></script>
+</body>
+</html>
