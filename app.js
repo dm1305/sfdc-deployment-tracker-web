@@ -1,141 +1,213 @@
-const CLIENT_ID = "3MVG9YFqzc_KnL.wada6.pbgp4zDPc8T6u6uR6srOVo1fS7XOD_kHsrDH_QurZzXeEgwzWBU365_xXQ54mMNn";
-const LOGIN_DOMAIN = "https://gearsetcom-4bf-dev-ed.develop.my.salesforce.com";
 const API_VERSION = "65.0";
 const TOKEN_KEY = "sf_token";
 
 const $ = (id) => document.getElementById(id);
+
+let cachedRecords = [];
 let trendChart = null;
-let comparisonBase = null; // Stores first selected deployment for comparison
+let activeJobs = new Set();
 
-/* ---------------- API & Init ---------------- */
+/* ---------------- Core Fetch ---------------- */
 
-async function sfFetch(path, tooling = false) {
-    const token = JSON.parse(localStorage.getItem(TOKEN_KEY));
-    const base = `${token.instance_url}/services/data/v${API_VERSION}${tooling ? '/tooling' : ''}`;
-    const resp = await fetch(base + path, { headers: { Authorization: `Bearer ${token.access_token}` } });
-    return await resp.json();
+async function sfFetch(path) {
+  const raw = localStorage.getItem(TOKEN_KEY);
+  if (!raw) throw new Error("Missing sf_token");
+
+  const token = JSON.parse(raw);
+  const url = `${token.instance_url}/services/data/v${API_VERSION}${path}`;
+
+  const resp = await fetch(url, {
+    headers: { Authorization: `Bearer ${token.access_token}` }
+  });
+
+  const text = await resp.text();
+  const json = text ? JSON.parse(text) : {};
+
+  if (!resp.ok) {
+    const msg = json?.[0]?.message || json.message || "API error";
+    throw new Error(msg);
+  }
+
+  return json;
 }
 
-/* ---------------- Visualizations ---------------- */
+/* ---------------- Notifications ---------------- */
+
+function requestNotifyPermission() {
+  Notification.requestPermission().then(p => {
+    if (p === "granted") alert("Notifications enabled!");
+  });
+}
+
+function notifyUser(title, body) {
+  if (Notification.permission === "granted") {
+    new Notification(title, {
+      body,
+      icon: "https://www.salesforce.com/favicon.ico"
+    });
+  }
+}
+
+/* ---------------- Live Monitor ---------------- */
+
+async function pollActiveDeployments() {
+  try {
+    const soql =
+      "SELECT Id, Status FROM DeployRequest WHERE Status IN ('InProgress','Queued')";
+    const res = await sfFetch(`/tooling/query?q=${encodeURIComponent(soql)}`);
+
+    const current = new Set(res.records.map(r => r.Id));
+
+    activeJobs.forEach(id => {
+      if (!current.has(id)) {
+        notifyUser("Deployment Complete", `Job ${id} completed`);
+        loadRecent();
+      }
+    });
+
+    activeJobs = current;
+
+    $("liveMonitorList").innerHTML = res.records.length
+      ? res.records.map(r =>
+          `<div class="status-badge status-InProgress">${r.Id.substring(0,15)}...</div>`
+        ).join("")
+      : "<small>All quiet.</small>";
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+/* ---------------- Deployment Details ---------------- */
+
+async function analyzeDeployment(id) {
+  $("detailsPanel").style.display = "block";
+  $("dependencyMap").innerHTML = "<small>Loading...</small>";
+
+  try {
+    const data = await sfFetch(
+      `/metadata/deployRequest/${id}?includeDetails=true`
+    );
+
+    const details = data.details || {};
+    const tests = data.runTestResult?.failures || [];
+
+    let html = "";
+
+    (details.componentFailures || []).forEach(f => {
+      html += `
+        <div class="dep-card">
+          <strong>${f.componentType}:</strong> ${f.fullName}
+          <br><small style="color:red">${f.problem}</small>
+        </div>`;
+    });
+
+    tests.forEach(t => {
+      html += `
+        <div class="dep-card test-fail">
+          <strong>${t.name}.${t.methodName}</strong>
+          <pre>${t.message}\n${t.stackTrace || ""}</pre>
+        </div>`;
+    });
+
+    $("dependencyMap").innerHTML = html || "<p>No blockers found.</p>";
+  } catch (e) {
+    $("dependencyMap").innerHTML =
+      `<p style="color:red">Failed to load: ${e.message}</p>`;
+  }
+}
+
+/* ---------------- Filtering + Load ---------------- */
+
+function toSoql(dt) {
+  return dt.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+async function loadRecent() {
+  const start = $("filterStart").value;
+  const end = $("filterEnd").value;
+
+  let q =
+    "SELECT Id, Status, CreatedDate, CompletedDate FROM DeployRequest";
+  const f = [];
+
+  if (start) f.push(`CreatedDate >= ${toSoql(new Date(start))}`);
+  if (end) {
+    const d = new Date(end);
+    d.setUTCDate(d.getUTCDate() + 1);
+    f.push(`CreatedDate < ${toSoql(d)}`);
+  }
+
+  if (f.length) q += " WHERE " + f.join(" AND ");
+  q += " ORDER BY CreatedDate DESC LIMIT 50";
+
+  const res = await sfFetch(`/tooling/query?q=${encodeURIComponent(q)}`);
+  cachedRecords = res.records;
+
+  $("deploymentsTbody").innerHTML = cachedRecords.map(r => `
+    <tr onclick="analyzeDeployment('${r.Id}')">
+      <td><span class="status-badge status-${r.Status}">${r.Status}</span></td>
+      <td>${r.CompletedDate
+        ? ((new Date(r.CompletedDate) - new Date(r.CreatedDate))/1000).toFixed(0) + "s"
+        : "—"}</td>
+    </tr>
+  `).join("");
+
+  updateTrendChart(cachedRecords);
+}
+
+/* ---------------- CSV Export ---------------- */
+
+function exportToCSV() {
+  const rows = [["Id","Status","Created","Duration"]];
+  cachedRecords.forEach(r => {
+    const d = r.CompletedDate
+      ? (new Date(r.CompletedDate) - new Date(r.CreatedDate))/1000
+      : 0;
+    rows.push([r.Id, r.Status, r.CreatedDate, d]);
+  });
+
+  const csv = "data:text/csv;charset=utf-8," +
+    rows.map(r => r.join(",")).join("\n");
+
+  const a = document.createElement("a");
+  a.href = encodeURI(csv);
+  a.download = "deployments.csv";
+  a.click();
+}
+
+/* ---------------- Chart ---------------- */
 
 function updateTrendChart(records) {
-    const ctx = $('trendChart').getContext('2d');
-    const data = [...records].reverse().map(r => {
-        const start = new Date(r.StartDate || r.CreatedDate);
-        const end = new Date(r.CompletedDate);
-        return (r.CompletedDate) ? (end - start) / 1000 : 0;
-    });
-    const labels = [...records].reverse().map(r => new Date(r.CreatedDate).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}));
+  const ctx = $("trendChart").getContext("2d");
 
-    if (trendChart) trendChart.destroy();
-    trendChart = new Chart(ctx, {
-        type: 'line',
-        data: {
-            labels,
-            datasets: [{
-                label: 'Execution Duration (Seconds)',
-                data,
-                borderColor: '#10ad9d',
-                backgroundColor: 'rgba(16, 173, 157, 0.1)',
-                fill: true,
-                tension: 0.3
-            }]
-        },
-        options: { responsive: true, maintainAspectRatio: false }
-    });
+  const data = records
+    .filter(r => r.CompletedDate)
+    .reverse()
+    .map(r => ({
+      t: new Date(r.CreatedDate).toLocaleTimeString(),
+      y: (new Date(r.CompletedDate) - new Date(r.CreatedDate))/1000
+    }));
+
+  if (trendChart) trendChart.destroy();
+
+  trendChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: data.map(d => d.t),
+      datasets: [{
+        data: data.map(d => d.y),
+        borderColor: "#10ad9d",
+        fill: false
+      }]
+    },
+    options: { maintainAspectRatio: false }
+  });
 }
 
-/* ---------------- Deployment Logic ---------------- */
+/* ---------------- Init ---------------- */
 
-async function loadDeployments() {
-    const soql = `SELECT Id, Status, CreatedDate, StartDate, CompletedDate FROM DeployRequest ORDER BY CreatedDate DESC LIMIT 20`;
-    const res = await sfFetch(`/query?q=${encodeURIComponent(soql)}`, true);
-    updateTrendChart(res.records);
-    
-    const tbody = $("deploymentsTbody");
-    tbody.innerHTML = "";
-    res.records.forEach(r => {
-        const total = r.CompletedDate ? (new Date(r.CompletedDate) - new Date(r.StartDate || r.CreatedDate)) / 1000 : 0;
-        const qTime = r.StartDate ? (new Date(r.StartDate) - new Date(r.CreatedDate)) / 1000 : 0;
+setInterval(pollActiveDeployments, 5000);
 
-        const tr = document.createElement("tr");
-        tr.className = "row-click";
-        tr.innerHTML = `
-            <td><b>${r.Status}</b></td>
-            <td>${total.toFixed(1)}s</td>
-            <td>${qTime.toFixed(1)}s</td>
-            <td><button class="outline" onclick="event.stopPropagation(); prepareComparison('${r.Id}')">Compare</button></td>
-        `;
-        tr.onclick = () => analyzeDeployment(r.Id, qTime);
-        tbody.appendChild(tr);
-    });
+if (localStorage.getItem(TOKEN_KEY)) {
+  loadRecent();
 }
-
-async function analyzeDeployment(id, qTime) {
-    $("detailsPanel").style.display = "block";
-    const data = await sfFetch(`/tooling/deployResponses/${id}`, false);
-    const details = data.deployDetails;
-    const successes = details.componentSuccesses || [];
-    const failures = details.componentFailures || [];
-    
-    $("compTotal").textContent = successes.length + failures.length;
-    $("runTimeLabel").textContent = `${((new Date(data.completedDate) - new Date(data.startDate))/1000).toFixed(1)}s`;
-
-    // Insight: Sharing & CPU Timeout Detection
-    const insights = [];
-    if (successes.some(c => c.componentType === 'CustomField')) {
-        insights.push(`<div class="insight-pill">⚠️ Sharing Recalc Risk</div>`);
-    }
-
-    let heatmapHtml = "";
-    if (details.runTestResult?.successes) {
-        details.runTestResult.successes.forEach(t => {
-            const isHighRisk = t.time > 10000; // 10s threshold for CPU timeout risk detection
-            heatmapHtml += `
-                <div style="margin-bottom:0.5rem">
-                    <small>${t.name} <span class="${isHighRisk ? 'risk-high' : ''}">(${t.time}ms)</span></small>
-                    <progress value="${t.time}" max="30000"></progress>
-                    ${isHighRisk ? '<small class="risk-high">Potential CPU Timeout Hazard</small>' : ''}
-                </div>`;
-        });
-    }
-    $("testHeatmap").innerHTML = heatmapHtml || "No tests found.";
-    $("insightList").innerHTML = insights.join('');
-    comparisonBase = { id, details }; // Store for potential comparison
-}
-
-/* ---------------- Comparison Tool ---------------- */
-
-async function prepareComparison(targetId) {
-    if (!comparisonBase) {
-        alert("Select a deployment on the left first to set as baseline.");
-        return;
-    }
-    const targetData = await sfFetch(`/tooling/deployResponses/${targetId}`, false);
-    const targetDetails = targetData.deployDetails;
-
-    $("comparisonSection").style.display = "block";
-    $("compareContent").innerHTML = `
-        <div>
-            <h6>Base: ${comparisonBase.id.substring(0,8)}</h6>
-            <p>Components: ${comparisonBase.details.componentSuccesses?.length || 0}</p>
-            <p>Tests: ${comparisonBase.details.runTestResult?.numTestsRun || 0}</p>
-        </div>
-        <div>
-            <h6>Target: ${targetId.substring(0,8)}</h6>
-            <p>Components: ${targetDetails.componentSuccesses?.length || 0}</p>
-            <p>Tests: ${targetDetails.runTestResult?.numTestsRun || 0}</p>
-        </div>
-    `;
-}
-
-/* ---------------- Wiring ---------------- */
-$("loginBtn")?.addEventListener("click", () => { /* existing oauth logic */ });
-$("logoutBtn")?.addEventListener("click", () => { localStorage.clear(); location.reload(); });
-
-(async function init() {
-    if (localStorage.getItem(TOKEN_KEY)) {
-        $("orgPill").textContent = JSON.parse(localStorage.getItem(TOKEN_KEY)).instance_url;
-        loadDeployments();
-    }
-})();
