@@ -1,9 +1,11 @@
 // ====== CONFIG (edit these) ======
-const CLIENT_ID = "3MVG9YFqzc_KnL.wada6.pbgp4zDPc8T6u6uR6srOVo1fS7XOD_kHsrDH_QurZzXeEgwzWBU365_xXQ54mMNn";
+const CLIENT_ID = "PASTE_YOUR_CONSUMER_KEY_HERE";
 const LOGIN_DOMAIN = "https://gearsetcom-4bf-dev-ed.develop.my.salesforce.com"; // your sandbox My Domain
 // =================================
 
 const TOKEN_KEY = "sf_token";
+
+/* ---------- PKCE + helpers ---------- */
 
 function base64UrlEncode(bytes) {
   let bin = "";
@@ -24,6 +26,8 @@ function randomString(length = 64) {
   return Array.from(bytes, b => chars[b % chars.length]).join("");
 }
 
+/* ---------- storage + UI ---------- */
+
 function setStatus(msg) {
   document.getElementById("status").textContent = msg;
 }
@@ -42,10 +46,12 @@ function clearToken() {
 }
 
 function getRedirectUri() {
-  // This is the URL of your GitHub Pages site (same origin as the page)
-  // Example: https://dm1305.github.io/sfdc-deployment-tracker-web/
+  // GitHub Pages URL (same origin + path)
+  // e.g. https://dm1305.github.io/sfdc-deployment-tracker-web/
   return window.location.origin + window.location.pathname;
 }
+
+/* ---------- OAuth ---------- */
 
 async function login() {
   if (!CLIENT_ID || CLIENT_ID.includes("PASTE_")) {
@@ -87,7 +93,7 @@ async function handleRedirectIfPresent() {
     return;
   }
 
-  if (!code) return; // not a redirect back from OAuth
+  if (!code) return; // not returning from OAuth
 
   const expectedState = sessionStorage.getItem("oauth_state");
   if (!expectedState || state !== expectedState) {
@@ -101,7 +107,7 @@ async function handleRedirectIfPresent() {
     return;
   }
 
-  // Clean URL (remove code/state from address bar)
+  // Clean URL
   url.searchParams.delete("code");
   url.searchParams.delete("state");
   window.history.replaceState({}, document.title, url.toString());
@@ -125,7 +131,9 @@ async function handleRedirectIfPresent() {
 
   const json = await resp.json().catch(() => null);
   if (!resp.ok) {
-    setStatus(`Token exchange failed: ${json?.error_description || json?.error || resp.status}`);
+    setStatus(
+      `Token exchange failed: ${json?.error_description || json?.error || resp.status}`
+    );
     return;
   }
 
@@ -138,10 +146,57 @@ async function logout() {
   setStatus("Logged out.");
 }
 
+/* ---------- Salesforce API calls ---------- */
+
+async function callUserInfo() {
+  const token = loadToken();
+  if (!token?.access_token) {
+    setStatus("Not logged in. Click Login first.");
+    return;
+  }
+
+  const resp = await fetch(`${LOGIN_DOMAIN}/services/oauth2/userinfo`, {
+    headers: { Authorization: `Bearer ${token.access_token}` },
+  });
+
+  const json = await resp.json().catch(() => null);
+  if (!resp.ok) {
+    setStatus(`userinfo failed: ${json?.error || json?.message || resp.status}`);
+    return;
+  }
+
+  setStatus("userinfo ✅\n" + JSON.stringify(json, null, 2));
+}
+
+async function callVersions() {
+  const token = loadToken();
+  if (!token?.access_token) {
+    setStatus("Not logged in. Click Login first.");
+    return;
+  }
+
+  const resp = await fetch(`${token.instance_url}/services/data/`, {
+    headers: { Authorization: `Bearer ${token.access_token}` },
+  });
+
+  const json = await resp.json().catch(() => null);
+  if (!resp.ok) {
+    setStatus(`services/data failed: ${json?.error || json?.message || resp.status}`);
+    return;
+  }
+
+  setStatus("services/data ✅ (API versions)\n" + JSON.stringify(json, null, 2));
+}
+
+/* ---------- wire up UI ---------- */
+
 document.getElementById("loginBtn").addEventListener("click", login);
 document.getElementById("logoutBtn").addEventListener("click", logout);
+document.getElementById("meBtn").addEventListener("click", callUserInfo);
+document.getElementById("orgBtn").addEventListener("click", callVersions);
 
-// On load
+/* ---------- init ---------- */
+
 (async function init() {
   await handleRedirectIfPresent();
   const token = loadToken();
