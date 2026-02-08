@@ -1,152 +1,641 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>SFDC Deployment Tracker (Web)</title>
+// ====== CONFIG (edit these) ======
+const CLIENT_ID = "3MVG9YFqzc_KnL.wada6.pbgp4zDPc8T6u6uR6srOVo1fS7XOD_kHsrDH_QurZzXeEgwzWBU365_xXQ54mMNn";
+const LOGIN_DOMAIN = "https://gearsetcom-4bf-dev-ed.develop.my.salesforce.com"; // your org My Domain
+// =================================
 
-  <style>
-    :root {
-      --bg: #0b0c10;
-      --panel: #12141a;
-      --panel2: #0f1117;
-      --text: #e8eaf0;
-      --muted: #a9afbf;
-      --border: #262a36;
-      --accent: #6ea8fe;
-      --good: #3ddc97;
-      --warn: #ffcc66;
-      --bad:  #ff6b6b;
-    }
+// Storage keys
+const TOKEN_KEY = "sf_token";
 
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
-      margin: 18px;
-    }
+// Latest API version from your /services/data output
+const API_VERSION = "65.0";
 
-    h1 { margin: 0 0 10px; font-size: 20px; }
-    h2 { margin: 0 0 10px; font-size: 14px; color: var(--muted); font-weight: 600; letter-spacing: .2px; }
+// Polling
+let pollTimer = null;
 
-    .topbar {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 12px;
-    }
+/* -------------------- UI helpers -------------------- */
 
-    .pill {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 999px;
-      padding: 6px 10px;
-      font-size: 12px;
-      color: var(--muted);
-      display: inline-flex;
-      gap: 8px;
-      align-items: center;
-    }
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
 
-    .btn {
-      border: 1px solid var(--border);
-      background: var(--panel);
-      color: var(--text);
-      padding: 8px 10px;
-      border-radius: 10px;
-      cursor: pointer;
-      font-size: 13px;
-    }
-    .btn:hover { border-color: #3a4060; }
-    .btn.primary { border-color: #2f5fb9; background: #11203d; }
-    .btn.danger { border-color: #7a2b2b; background: #2a1111; }
+function log(msg) {
+  const el = document.getElementById("logPre") || document.getElementById("status");
+  if (!el) return;
+  const stamp = new Date().toISOString();
+  el.textContent = `[${stamp}] ${msg}\n` + el.textContent;
+}
 
-    .tabs {
-      display: flex;
-      gap: 8px;
-      margin: 10px 0 12px;
-    }
-    .tab {
-      border: 1px solid var(--border);
-      background: var(--panel2);
-      color: var(--muted);
-      padding: 8px 10px;
-      border-radius: 10px;
-      cursor: pointer;
-      font-size: 13px;
-    }
-    .tab.active {
-      color: var(--text);
-      border-color: #3a4060;
-      background: var(--panel);
-    }
+function setStatus(msg) {
+  // Backwards compatible: old UI used #status; new UI uses #logPre / #selectedPre / tab-specific pre blocks
+  const el =
+    document.getElementById("selectedPre") ||
+    document.getElementById("logPre") ||
+    document.getElementById("status");
+  if (el) el.textContent = msg;
+}
 
-    .layout {
-      display: grid;
-      grid-template-columns: 1.6fr 1fr;
-      gap: 12px;
-    }
-    @media (max-width: 1050px) {
-      .layout { grid-template-columns: 1fr; }
-    }
+function wire(id, handler) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener("click", handler);
+}
 
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 12px;
-    }
+/* -------------------- Storage helpers -------------------- */
 
-    .row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      align-items: center;
-      margin: 10px 0;
-    }
+function saveToken(token) {
+  localStorage.setItem(TOKEN_KEY, JSON.stringify(token));
+}
 
-    label {
-      font-size: 12px;
-      color: var(--muted);
-      display: inline-flex;
-      gap: 8px;
-      align-items: center;
-    }
+function loadToken() {
+  const raw = localStorage.getItem(TOKEN_KEY);
+  return raw ? JSON.parse(raw) : null;
+}
 
-    input, select {
-      background: #0f1220;
-      color: var(--text);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 8px 10px;
-      font-size: 13px;
-      outline: none;
-    }
-    input::placeholder { color: #6b7186; }
+function clearToken() {
+  localStorage.removeItem(TOKEN_KEY);
+}
 
-    .tableWrap { overflow: auto; border-radius: 12px; border: 1px solid var(--border); }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      min-width: 900px;
-      background: #0f1117;
-    }
-    th, td {
-      padding: 10px;
-      border-bottom: 1px solid var(--border);
-      font-size: 13px;
-      text-align: left;
-      vertical-align: top;
-      white-space: nowrap;
-    }
-    th { color: var(--muted); font-weight: 600; background: #0c0e15; position: sticky; top: 0; z-index: 1; }
-    td.small { color: var(--muted); font-size: 12px; white-space: normal; }
-    .status { font-weight: 700; }
-    .status.good { color: var(--good); }
-    .status.warn { color: var(--warn); }
-    .status.bad  { color: var(--bad); }
+function clearSessionState() {
+  sessionStorage.removeItem("pkce_verifier");
+  sessionStorage.removeItem("oauth_state");
+}
 
-    .mono {
-      font
+function redactTokenForDisplay(token) {
+  if (!token) return token;
+  const copy = { ...token };
+  if (copy.access_token) copy.access_token = "(redacted)";
+  if (copy.refresh_token) copy.refresh_token = "(redacted)";
+  if (copy.id_token) copy.id_token = "(redacted)";
+  return copy;
+}
+
+/* -------------------- PKCE helpers -------------------- */
+
+function base64UrlEncode(bytes) {
+  let bin = "";
+  bytes.forEach((b) => (bin += String.fromCharCode(b)));
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+async function sha256Base64Url(text) {
+  const data = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return base64UrlEncode(new Uint8Array(digest));
+}
+
+function randomString(length = 64) {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  return Array.from(bytes, (b) => chars[b % chars.length]).join("");
+}
+
+function getRedirectUri() {
+  // GitHub Pages URL (same origin + path)
+  return window.location.origin + window.location.pathname;
+}
+
+/* -------------------- OAuth -------------------- */
+
+async function login() {
+  if (!CLIENT_ID) {
+    alert("Missing CLIENT_ID in app.js.");
+    return;
+  }
+
+  const redirectUri = getRedirectUri();
+
+  // PKCE
+  const codeVerifier = randomString(96);
+  const codeChallenge = await sha256Base64Url(codeVerifier);
+  sessionStorage.setItem("pkce_verifier", codeVerifier);
+
+  const state = randomString(24);
+  sessionStorage.setItem("oauth_state", state);
+
+  const authUrl = new URL(`${LOGIN_DOMAIN}/services/oauth2/authorize`);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("client_id", CLIENT_ID);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
+  authUrl.searchParams.set("scope", "refresh_token full");
+  authUrl.searchParams.set("state", state);
+  authUrl.searchParams.set("code_challenge", codeChallenge);
+  authUrl.searchParams.set("code_challenge_method", "S256");
+
+  window.location.href = authUrl.toString();
+}
+
+async function handleRedirectIfPresent() {
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  const error = url.searchParams.get("error");
+  const errorDesc = url.searchParams.get("error_description");
+
+  if (error) {
+    setStatus(`OAuth error: ${error}${errorDesc ? " - " + errorDesc : ""}`);
+    return;
+  }
+
+  if (!code) return; // not returning from OAuth
+
+  const expectedState = sessionStorage.getItem("oauth_state");
+  if (!expectedState || state !== expectedState) {
+    setStatus("State mismatch. Aborting.");
+    return;
+  }
+
+  const verifier = sessionStorage.getItem("pkce_verifier");
+  if (!verifier) {
+    setStatus("Missing PKCE verifier. Aborting.");
+    return;
+  }
+
+  // Clean URL (remove code/state from address bar)
+  url.searchParams.delete("code");
+  url.searchParams.delete("state");
+  window.history.replaceState({}, document.title, url.toString());
+
+  // Exchange code for token
+  const tokenUrl = `${LOGIN_DOMAIN}/services/oauth2/token`;
+
+  const body = new URLSearchParams();
+  body.set("grant_type", "authorization_code");
+  body.set("client_id", CLIENT_ID);
+  body.set("redirect_uri", getRedirectUri());
+  body.set("code", code);
+  body.set("code_verifier", verifier);
+
+  const resp = await fetch(tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+
+  const json = await resp.json().catch(() => null);
+  if (!resp.ok) {
+    setStatus(`Token exchange failed: ${json?.error_description || json?.error || resp.status}`);
+    return;
+  }
+
+  saveToken(json);
+
+  // Update pills if present
+  setText("orgPill", json.instance_url || "Connected");
+  setText("apiPill", `v${API_VERSION}`);
+
+  // Don’t print secrets by default
+  const safe = redactTokenForDisplay(json);
+  log("Logged in ✅ Token stored in localStorage.");
+  setStatus("Logged in ✅\n" + JSON.stringify(safe, null, 2));
+}
+
+async function logout() {
+  clearToken();
+  clearSessionState();
+  stopPolling();
+  setText("orgPill", "Not connected");
+  setText("apiPill", "—");
+  setStatus("Logged out.");
+  log("Logged out.");
+}
+
+/* -------------------- REST helpers -------------------- */
+
+function requireToken() {
+  const token = loadToken();
+  if (!token?.access_token || !token?.instance_url) {
+    setStatus("Not logged in. Click Login first.");
+    return null;
+  }
+  return token;
+}
+
+async function sfFetch(path, { tooling = false, method = "GET", headers = {}, body = null } = {}) {
+  const token = requireToken();
+  if (!token) return { ok: false, status: 0, json: null };
+
+  const base = tooling
+    ? `${token.instance_url}/services/data/v${API_VERSION}/tooling`
+    : `${token.instance_url}/services/data/v${API_VERSION}`;
+
+  const url = `${base}${path}`;
+
+  const resp = await fetch(url, {
+    method,
+    headers: {
+      Authorization: `Bearer ${token.access_token}`,
+      ...headers,
+    },
+    body,
+  });
+
+  const json = await resp.json().catch(() => null);
+  return { ok: resp.ok, status: resp.status, json };
+}
+
+/* -------------------- Time formatting -------------------- */
+
+function parseDate(s) {
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+function fmtTime(d) {
+  if (!d) return "—";
+  return d.toISOString().replace("T", " ").replace("Z", "Z");
+}
+
+function fmtDuration(ms) {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
+  const sec = Math.floor(ms / 1000);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return `${h}h ${m}m ${s}s`;
+}
+
+/* -------------------- Tabs -------------------- */
+
+function showTab(tab) {
+  // Tabs
+  const tDeploy = document.getElementById("tabDeployments");
+  const tPkg = document.getElementById("tabPackages");
+  const tHist = document.getElementById("tabPackageHistory");
+  const tDet = document.getElementById("tabDeployDetails");
+
+  [tDeploy, tPkg, tHist, tDet].forEach((b) => b && b.classList.remove("active"));
+  if (tab === "deployments") tDeploy && tDeploy.classList.add("active");
+  if (tab === "packages") tPkg && tPkg.classList.add("active");
+  if (tab === "history") tHist && tHist.classList.add("active");
+  if (tab === "details") tDet && tDet.classList.add("active");
+
+  // Panels
+  setPanelVisible("deploymentsControls", tab === "deployments");
+  setPanelVisible("packagesControls", tab === "packages");
+  setPanelVisible("packageHistoryControls", tab === "history");
+  setPanelVisible("deployDetailsControls", tab === "details");
+}
+
+function setPanelVisible(id, isVisible) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.style.display = isVisible ? "" : "none";
+}
+
+/* -------------------- Step 1: Deployments table + polling + durations -------------------- */
+
+function statusClass(status) {
+  const s = String(status || "").toLowerCase();
+  if (["succeeded", "success", "completed"].some((k) => s.includes(k))) return "good";
+  if (["failed", "error"].some((k) => s.includes(k))) return "bad";
+  if (["inprogress", "in progress", "queued", "pending", "validat", "running", "processing"].some((k) => s.includes(k)))
+    return "warn";
+  return "";
+}
+
+function passesDeployFilter(r) {
+  const filter = document.getElementById("deployFilter")?.value || "all";
+  const status = String(r.Status || "");
+  const checkOnly = !!r.CheckOnly;
+
+  if (filter === "active") {
+    const active = ["InProgress", "Pending", "Queued", "Processing", "Running", "Validating"];
+    return active.includes(status);
+  }
+  if (filter === "failed") return status.toLowerCase().includes("fail") || status.toLowerCase().includes("error");
+  if (filter === "checkonly") return checkOnly;
+  if (filter === "real") return !checkOnly;
+  return true;
+}
+
+function passesDeploySearch(r) {
+  const q = (document.getElementById("deploySearch")?.value || "").trim().toLowerCase();
+  if (!q) return true;
+  const blob = [
+    r.Status,
+    r.Type,
+    r.CreatedBy?.Name,
+    r.ErrorStatusCode,
+    r.ErrorMessage,
+    r.Id,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return blob.includes(q);
+}
+
+function rowHtmlDeploy(r) {
+  const now = new Date();
+
+  const created = parseDate(r.CreatedDate);
+  const started = parseDate(r.StartDate) || created;
+  const completed = parseDate(r.CompletedDate);
+
+  const queueMs = created && started ? started - created : null;
+  const runMs = started ? (completed ? completed - started : now - started) : null;
+  const totalMs = created ? (completed ? completed - created : now - created) : null;
+
+  const st = r.Status || "—";
+  const stClass = statusClass(st);
+
+  const type = r.Type || "—";
+  const user = r.CreatedBy?.Name || "—";
+
+  const actionBtn = `<button class="btn" data-deploy-id="${r.Id}" data-action="selectDeploy">Details</button>`;
+
+  return `
+    <tr>
+      <td class="status ${stClass}">${st}</td>
+      <td>${user}</td>
+      <td>${type}${r.CheckOnly ? ' <span class="muted">(checkOnly)</span>' : ""}</td>
+      <td class="mono">${fmtTime(created)}</td>
+      <td class="mono">${fmtTime(parseDate(r.StartDate))}</td>
+      <td class="mono">${fmtTime(completed)}</td>
+      <td class="mono">${fmtDuration(queueMs)}</td>
+      <td class="mono">${fmtDuration(runMs)}</td>
+      <td class="mono">${fmtDuration(totalMs)}</td>
+      <td>${actionBtn}</td>
+    </tr>
+  `.trim();
+}
+
+async function fetchDeployments() {
+  const limit = Number(document.getElementById("deployLimit")?.value || 20);
+
+  const soql = `
+    SELECT Id, Status, Type, CheckOnly,
+           CreatedDate, StartDate, CompletedDate,
+           CreatedBy.Name,
+           ErrorStatusCode, ErrorMessage
+    FROM DeployRequest
+    ORDER BY CreatedDate DESC
+    LIMIT ${limit}
+  `.trim();
+
+  const { ok, status, json } = await sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
+
+  if (!ok) {
+    log(`DeployRequest query failed (HTTP ${status}): ${json?.[0]?.message || json?.message || "Unknown error"}`);
+    setStatus(`DeployRequest query failed: ${json?.[0]?.message || json?.message || status}`);
+    return;
+  }
+
+  const recs = json?.records || [];
+  const filtered = recs.filter(passesDeployFilter).filter(passesDeploySearch);
+
+  const tbody = document.getElementById("deploymentsTbody");
+  if (!tbody) return;
+
+  if (!filtered.length) {
+    tbody.innerHTML = `<tr><td class="small muted" colspan="10">No deployments match the current filter.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(rowHtmlDeploy).join("\n");
+
+  // Attach row action handlers (event delegation)
+  tbody.querySelectorAll('button[data-action="selectDeploy"]').forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = btn.getAttribute("data-deploy-id");
+      const rec = filtered.find((x) => x.Id === id);
+      if (rec) showDeploySelection(rec);
+    });
+  });
+
+  log(`Deployments refreshed (${filtered.length} rows).`);
+}
+
+function showDeploySelection(rec) {
+  const created = rec.CreatedDate || "—";
+  const started = rec.StartDate || "—";
+  const completed = rec.CompletedDate || "—";
+
+  const payload = {
+    Id: rec.Id,
+    Status: rec.Status,
+    Type: rec.Type,
+    CheckOnly: rec.CheckOnly,
+    CreatedBy: rec.CreatedBy?.Name,
+    CreatedDate: created,
+    StartDate: started,
+    CompletedDate: completed,
+    ErrorStatusCode: rec.ErrorStatusCode,
+    ErrorMessage: rec.ErrorMessage,
+  };
+
+  setText("selectedPre", JSON.stringify(payload, null, 2));
+}
+
+function stopPolling() {
+  if (pollTimer) {
+    clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
+function startPolling() {
+  stopPolling();
+  const seconds = Number(document.getElementById("pollInterval")?.value || 0);
+  if (!seconds) return;
+
+  pollTimer = setInterval(() => {
+    fetchDeployments().catch((e) => log(`Polling error: ${e?.message || e}`));
+  }, seconds * 1000);
+
+  log(`Auto-refresh enabled: every ${seconds}s`);
+}
+
+/* -------------------- Step 2: Packages inventory -------------------- */
+
+function pkgRowHtml(r) {
+  const pkg = r.SubscriberPackage || {};
+  const ver = r.SubscriberPackageVersion || {};
+  const version = [ver.MajorVersion, ver.MinorVersion, ver.PatchVersion, ver.BuildNumber]
+    .filter((x) => x !== null && x !== undefined)
+    .join(".");
+
+  return `
+    <tr>
+      <td>${pkg.Name || "—"}</td>
+      <td class="mono">${pkg.NamespacePrefix || "—"}</td>
+      <td class="mono">${version || "—"}</td>
+    </tr>
+  `.trim();
+}
+
+async function fetchPackages() {
+  const soql = `
+    SELECT
+      Id,
+      SubscriberPackage.Name,
+      SubscriberPackage.NamespacePrefix,
+      SubscriberPackageVersion.MajorVersion,
+      SubscriberPackageVersion.MinorVersion,
+      SubscriberPackageVersion.PatchVersion,
+      SubscriberPackageVersion.BuildNumber
+    FROM InstalledSubscriberPackage
+    ORDER BY SubscriberPackage.Name
+    LIMIT 200
+  `.trim();
+
+  const { ok, status, json } = await sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
+
+  if (!ok) {
+    log(`Packages query failed (HTTP ${status}): ${json?.[0]?.message || json?.message || "Unknown error"}`);
+    setText("packagesTbody", `<tr><td class="small muted" colspan="3">Failed to load packages.</td></tr>`);
+    return;
+  }
+
+  const recs = json?.records || [];
+  const q = (document.getElementById("pkgSearch")?.value || "").trim().toLowerCase();
+  const filtered = !q
+    ? recs
+    : recs.filter((r) => {
+        const pkg = r.SubscriberPackage || {};
+        const blob = `${pkg.Name || ""} ${pkg.NamespacePrefix || ""}`.toLowerCase();
+        return blob.includes(q);
+      });
+
+  const tbody = document.getElementById("packagesTbody");
+  if (!tbody) return;
+
+  if (!filtered.length) {
+    tbody.innerHTML = `<tr><td class="small muted" colspan="3">No packages match your search.</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filtered.map(pkgRowHtml).join("\n");
+  log(`Packages refreshed (${filtered.length} rows).`);
+}
+
+/* -------------------- Step 3: Package install history (discovery scaffold) -------------------- */
+
+async function discoverPackageHistorySources() {
+  // This is a “scaffold”: we’ll probe available sObjects and look for likely candidates.
+  const { ok, status, json } = await sfFetch(`/sobjects/`, { tooling: false });
+  if (!ok) {
+    setText("packageHistoryPre", `Failed to list sObjects: HTTP ${status}\n${JSON.stringify(json, null, 2)}`);
+    return;
+  }
+
+  const names = (json?.sobjects || []).map((s) => s.name).filter(Boolean);
+
+  const candidates = names.filter((n) =>
+    /(package|install|subscriber|managed|unlocked|2gp|1gp)/i.test(n)
+  );
+
+  setText(
+    "packageHistoryPre",
+    "Discovered candidate objects (names only):\n\n" + candidates.sort().join("\n") +
+      "\n\nNext: we’ll pick the best candidate and query recent records."
+  );
+
+  log(`Discovered ${candidates.length} candidate objects for package history.`);
+}
+
+/* -------------------- Step 4: Deploy details (placeholder panel) -------------------- */
+
+async function fetchDeployDetails() {
+  const id = (document.getElementById("metadataDeployIdInput")?.value || "").trim();
+  if (!id) {
+    setText("deployDetailsPre", "Paste a Metadata deploy async id first.");
+    return;
+  }
+  setText(
+    "deployDetailsPre",
+    "This UI is ready, but your org-wide DeployRequest list does not always provide a Metadata async id.\n\n" +
+      "If you initiate deployments from this app, we can capture the async id and show:\n" +
+      "- numberComponentsTotal / Deployed / Errors\n" +
+      "- componentSuccesses (type/name)\n" +
+      "- componentFailures (type/name/problem)\n\n" +
+      `You pasted: ${id}\n\nNext step: add a Metadata deploy-status call for this id.`
+  );
+  log("Deploy details fetch scaffold invoked.");
+}
+
+/* -------------------- UI actions -------------------- */
+
+async function refreshNow() {
+  const token = loadToken();
+  if (token?.instance_url) setText("orgPill", token.instance_url);
+  setText("apiPill", `v${API_VERSION}`);
+
+  const activeTab = document.querySelector(".tab.active")?.id;
+
+  try {
+    if (activeTab === "tabPackages") {
+      await fetchPackages();
+    } else if (activeTab === "tabPackageHistory") {
+      // no-op unless user clicks discover/refresh
+      log("Package history tab: use Discover/Refresh buttons.");
+    } else if (activeTab === "tabDeployDetails") {
+      // no-op unless user fetches details
+      log("Deploy details tab: paste async id and click Fetch.");
+    } else {
+      await fetchDeployments();
+    }
+  } catch (e) {
+    log(`Refresh error: ${e?.message || e}`);
+  }
+}
+
+function clearSession() {
+  clearToken();
+  clearSessionState();
+  stopPolling();
+  setText("orgPill", "Not connected");
+  setText("apiPill", "—");
+  setText("selectedPre", "Nothing selected.");
+  setText("logPre", "Ready.");
+  setStatus("Cleared local + session storage.");
+  location.reload();
+}
+
+/* -------------------- Wire up new UI IDs -------------------- */
+
+wire("loginBtn", login);
+wire("logoutBtn", logout);
+wire("refreshBtn", refreshNow);
+wire("clearStorageBtn", clearSession);
+
+wire("tabDeployments", () => { showTab("deployments"); refreshNow(); });
+wire("tabPackages", () => { showTab("packages"); refreshNow(); });
+wire("tabPackageHistory", () => { showTab("history"); refreshNow(); });
+wire("tabDeployDetails", () => { showTab("details"); refreshNow(); });
+
+wire("pollInterval", () => startPolling());
+wire("deployFilter", () => fetchDeployments());
+wire("deployLimit", () => fetchDeployments());
+wire("deploySearch", () => fetchDeployments());
+wire("pkgSearch", () => fetchPackages());
+
+wire("refreshPackagesBtn", fetchPackages);
+wire("discoverHistoryBtn", discoverPackageHistorySources);
+wire("refreshHistoryBtn", () => log("History refresh not implemented yet—use Discover first."));
+wire("fetchDeployDetailsBtn", fetchDeployDetails);
+
+/* -------------------- Init -------------------- */
+
+(async function init() {
+  // Tab default
+  showTab("deployments");
+
+  await handleRedirectIfPresent();
+
+  const token = loadToken();
+  if (token?.access_token) {
+    setText("orgPill", token.instance_url || "Connected");
+    setText("apiPill", `v${API_VERSION}`);
+    log("Already logged in ✅ Token loaded from localStorage.");
+    await fetchDeployments();
+    startPolling();
+  } else {
+    setText("orgPill", "Not connected");
+    setText("apiPill", "—");
+    log("Not logged in.");
+  }
+})();
