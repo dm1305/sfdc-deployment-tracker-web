@@ -1,12 +1,17 @@
 const BUILD = Auth.BUILD;
 
 let pollTimer = null;
+let realtimeTimer = null;
 let inFlight = false;
 let lastPollSkipped = false;
 
 let lastDeployments = [];
 let lastTestRuns = [];
 let deployToTest = new Map();
+
+let trendChart = null;
+let heatmapChart = null;
+let activeJobs = new Set();
 
 function setLastRefreshed(){
   Auth.setText("lastRefreshed", `Last refreshed: ${new Date().toISOString().replace("T"," ").replace("Z","Z")}`);
@@ -24,6 +29,33 @@ function setBusy(isBusy, label=null){
     const b = document.getElementById(id);
     if (b) b.disabled = !!isBusy;
   });
+}
+
+/* -------------------- Browser notifications -------------------- */
+
+function requestNotifyPermission(){
+  if (!("Notification" in window)){
+    Auth.log("Notifications not supported by this browser.");
+    return;
+  }
+  Notification.requestPermission().then((p) => {
+    if (p === "granted"){
+      Auth.log("Notifications enabled.");
+      notifyUser("Alerts enabled", "Deployment completion alerts are on.");
+    } else {
+      Auth.log("Notifications permission not granted.");
+    }
+  }).catch((e) => Auth.log(`Notifications error: ${e?.message || e}`));
+}
+
+function notifyUser(title, body){
+  try{
+    if (Notification.permission === "granted"){
+      new Notification(title, { body, icon: "https://www.salesforce.com/favicon.ico" });
+    }
+  } catch (e) {
+    // ignore
+  }
 }
 
 function stopPolling(){
@@ -49,6 +81,40 @@ function startPolling(){
     await refreshActiveTab(true);
   }, seconds * 1000);
   Auth.log(`Auto-refresh enabled: every ${seconds}s`);
+}
+
+/* -------------------- Real-time deployment monitor -------------------- */
+
+function stopRealtimeMonitor(){
+  if (realtimeTimer){
+    clearInterval(realtimeTimer);
+    realtimeTimer = null;
+  }
+  activeJobs = new Set();
+}
+
+function startRealtimeMonitor(){
+  stopRealtimeMonitor();
+  // keep this separate from the main polling interval: completions are useful even when the UI isn't actively refreshing
+  realtimeTimer = setInterval(async () => {
+    if (inFlight) return;
+    await pollActiveDeployments();
+  }, 5000);
+}
+
+async function pollActiveDeployments(){
+  const soql = `SELECT Id, Status, CreatedDate FROM DeployRequest WHERE Status IN ('InProgress','Queued','Pending','Processing','Validating') ORDER BY CreatedDate DESC LIMIT 100`;
+  const resp = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
+  if (!resp.ok) return;
+  const current = new Set((resp.json?.records || []).map((r) => r.Id));
+
+  activeJobs.forEach((id) => {
+    if (!current.has(id)){
+      notifyUser("Deployment complete", `Job ${id} finished.`);
+      Auth.log(`Realtime: deploy completed: ${id}`);
+    }
+  });
+  activeJobs = current;
 }
 
 /* -------------------- Tab switching -------------------- */
@@ -183,7 +249,7 @@ function renderDeploymentsTable(rows){
     const corr = deployToTest.get(r.Id) || null;
 
     return `
-      <tr>
+      <tr class="rowClickable" data-row="deploy" data-id="${r.Id}" title="Click to load deploy details">
         <td class="status ${stClass}">${st}</td>
         <td>${r.CreatedBy?.Name || "—"}</td>
         <td>${r.Type || "—"}${r.CheckOnly ? ' <span class="muted">(checkOnly)</span>' : ""}</td>
@@ -237,6 +303,7 @@ function renderDeploymentsTable(rows){
           ErrorMessage: rec.ErrorMessage,
           CorrelatedTest: deployToTest.get(rec.Id) || null
         });
+        await loadDeploymentDetails(rec.Id);
         return;
       }
 
@@ -247,17 +314,39 @@ function renderDeploymentsTable(rows){
       }
     });
   });
+
+  tbody.querySelectorAll("tr.rowClickable[data-row='deploy']").forEach((tr) => {
+    tr.addEventListener("click", async (e) => {
+      if (e.target?.closest && e.target.closest("button")) return;
+      const id = tr.getAttribute("data-id");
+      if (!id) return;
+      await loadDeploymentDetails(id);
+    });
+  });
 }
 
 /* -------------------- Data: Deployments -------------------- */
 async function fetchDeployments(){
   const limit = Number(document.getElementById("deployLimit")?.value || 20);
+  const start = document.getElementById("deployStart")?.value || "";
+  const end = document.getElementById("deployEnd")?.value || "";
+
+  const filters = [];
+  if (start){
+    const iso = new Date(start + "T00:00:00Z").toISOString().replace(".000Z","Z");
+    filters.push(`CreatedDate >= ${iso}`);
+  }
+  if (end){
+    const iso = new Date(end + "T23:59:59Z").toISOString().replace(".000Z","Z");
+    filters.push(`CreatedDate <= ${iso}`);
+  }
+  const where = filters.length ? (" WHERE " + filters.join(" AND ")) : "";
   const soql = `
     SELECT Id, Status, Type, CheckOnly,
            CreatedDate, StartDate, CompletedDate,
            CreatedBy.Name, CreatedById,
            ErrorStatusCode, ErrorMessage
-    FROM DeployRequest
+    FROM DeployRequest${where}
     ORDER BY CreatedDate DESC
     LIMIT ${limit}
   `.trim();
@@ -280,6 +369,7 @@ async function fetchDeployments(){
 
   const filtered = recs.filter(passesDeployFilter).filter(passesDeploySearch);
   renderDeploymentsTable(filtered);
+  updateTrendChart(filtered);
   return filtered;
 }
 
@@ -504,6 +594,351 @@ function correlateDeploymentsToTests(deployments, testRuns){
   Auth.log(`Correlation updated: ${deployToTest.size} deployments matched to test runs.`);
 }
 
+/* -------------------- Charts + exports -------------------- */
+
+function updateTrendChart(records){
+  const canvas = document.getElementById("trendChart");
+  if (!canvas || typeof Chart === "undefined") return;
+
+  const points = (records || [])
+    .filter((r) => r.CompletedDate)
+    .slice()
+    .reverse()
+    .map((r) => {
+      const created = new Date(r.CreatedDate);
+      const completed = new Date(r.CompletedDate);
+      const sec = Math.max(0, (completed - created) / 1000);
+      return { label: created.toLocaleString(), sec };
+    });
+
+  const labels = points.map((p) => p.label);
+  const data = points.map((p) => p.sec);
+
+  if (trendChart) trendChart.destroy();
+  trendChart = new Chart(canvas.getContext("2d"), {
+    type: "line",
+    data: {
+      labels,
+      datasets: [{ label: "Deploy duration (s)", data, tension: 0.25, fill: false }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { maxRotation: 0, autoSkip: true, maxTicksLimit: 6 } },
+      },
+    },
+  });
+}
+
+function exportDeploymentsToCSV(){
+  const rows = (lastDeployments || []).filter(passesDeployFilter).filter(passesDeploySearch);
+  const header = [
+    "Id","Status","Type","CheckOnly","CreatedDate","StartDate","CompletedDate",
+    "QueueMs","RunMs","TotalMs","CorrelatedRunId","CorrelatedFailures","CorrelatedTestMs"
+  ];
+  const out = [header];
+
+  const now = new Date();
+  for (const r of rows){
+    const created = r.CreatedDate ? new Date(r.CreatedDate) : null;
+    const started = r.StartDate ? new Date(r.StartDate) : created;
+    const completed = r.CompletedDate ? new Date(r.CompletedDate) : null;
+    const queueMs = created && started ? (started - created) : "";
+    const runMs = started ? ((completed ? completed : now) - started) : "";
+    const totalMs = created ? ((completed ? completed : now) - created) : "";
+
+    const corr = deployToTest.get(r.Id) || null;
+    out.push([
+      r.Id,
+      r.Status || "",
+      r.Type || "",
+      r.CheckOnly ? "true" : "false",
+      r.CreatedDate || "",
+      r.StartDate || "",
+      r.CompletedDate || "",
+      queueMs,
+      runMs,
+      totalMs,
+      corr?.runId || "",
+      corr?.failures ?? "",
+      corr?.durationMs ?? "",
+    ]);
+  }
+
+  const csv = out.map((row) => row.map((v) => {
+    const s = String(v ?? "");
+    if (/[\n\r\",]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  }).join(",")).join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "deployments.csv";
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/* -------------------- Deploy details (Metadata API) -------------------- */
+
+async function fetchMetadataDeployResult(asyncId){
+  // Metadata REST resource: /services/data/vXX.X/metadata/deployRequest/<id>?includeDetails=true
+  setLastRequest(`metadata deployRequest ${asyncId}`);
+  return await Auth.sfFetch(`/metadata/deployRequest/${encodeURIComponent(asyncId)}?includeDetails=true`, { tooling:false });
+}
+
+function groupByComponentType(details){
+  const suc = details?.componentSuccesses || [];
+  const fail = details?.componentFailures || [];
+  const map = new Map();
+  const add = (t, key) => {
+    const type = String(t || "Unknown");
+    const cur = map.get(type) || { type, success: 0, fail: 0 };
+    cur[key] += 1;
+    map.set(type, cur);
+  };
+  suc.forEach((c) => add(c.componentType, "success"));
+  fail.forEach((c) => add(c.componentType, "fail"));
+  return Array.from(map.values()).sort((a,b) => (b.fail - a.fail) || (b.success - a.success));
+}
+
+function buildBottleneckInsights(deploy, mdDetails, corr){
+  const insights = [];
+  const created = deploy?.CreatedDate ? new Date(deploy.CreatedDate) : null;
+  const started = deploy?.StartDate ? new Date(deploy.StartDate) : created;
+  const completed = deploy?.CompletedDate ? new Date(deploy.CompletedDate) : null;
+  const now = new Date();
+
+  const queueMs = (created && started) ? (started - created) : null;
+  const runMs = started ? ((completed ? completed : now) - started) : null;
+  const totalMs = created ? ((completed ? completed : now) - created) : null;
+
+  if (queueMs != null && queueMs > 2 * 60 * 1000) insights.push(`High queue time: ${fmtDuration(queueMs)} (possible org contention or queued jobs).`);
+  if (runMs != null && runMs > 10 * 60 * 1000) insights.push(`Slow deployment runtime: ${fmtDuration(runMs)}.`);
+
+  const totalComps = mdDetails ? ((mdDetails.componentSuccesses?.length || 0) + (mdDetails.componentFailures?.length || 0)) : null;
+  if (totalComps != null && totalComps > 500) insights.push(`Large metadata payload: ${totalComps} components (Metadata API download often slows with large zips).`);
+
+  if (corr?.durationMs != null && corr.durationMs > 5 * 60 * 1000) insights.push(`Slow correlated Apex tests: ${fmtDuration(corr.durationMs)}.`);
+  if (corr?.failures != null && corr.failures > 0) insights.push(`Correlated tests failed: ${corr.failures}.`);
+
+  if (!insights.length) insights.push("No obvious bottlenecks detected by heuristics.");
+  return insights;
+}
+
+async function fetchConcurrentJobs(start, end){
+  if (!start || !end) return [];
+  const iso = (d) => d.toISOString();
+  const soql = `SELECT Id, Status, JobType, MethodName, ApexClass.Name, CreatedDate, CompletedDate, TotalJobItems, JobItemsProcessed, NumberOfErrors FROM AsyncApexJob WHERE CreatedDate >= ${iso(start)} AND CreatedDate <= ${iso(end)} ORDER BY CreatedDate DESC LIMIT 100`;
+  setLastRequest("rest query AsyncApexJob");
+  const { ok, json } = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling:false });
+  if (!ok) return [];
+  return json?.records || [];
+}
+
+async function renderTestHeatmap(runId){
+  const canvas = document.getElementById("testHeatmap");
+  if (!canvas || typeof Chart === "undefined") return;
+  if (!runId) {
+    if (heatmapChart) heatmapChart.destroy();
+    heatmapChart = null;
+    return;
+  }
+
+  const soql = `SELECT ApexClass.Name, RunTime, Outcome, MethodName FROM ApexTestResult WHERE ApexTestRunId = '${runId}' ORDER BY RunTime DESC LIMIT 200`;
+  setLastRequest("tooling query ApexTestResult (heatmap)");
+  const { ok, json } = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling:true });
+  if (!ok) return;
+
+  const recs = json?.records || [];
+  const agg = new Map();
+  for (const r of recs){
+    const cls = r.ApexClass?.Name || "(unknown)";
+    const cur = agg.get(cls) || { cls, ms: 0, count: 0, fails: 0 };
+    cur.ms += Number(r.RunTime || 0);
+    cur.count += 1;
+    if (String(r.Outcome || "").toLowerCase() !== "pass") cur.fails += 1;
+    agg.set(cls, cur);
+  }
+  const top = Array.from(agg.values()).sort((a,b) => b.ms - a.ms).slice(0, 12);
+  const labels = top.map((x) => x.cls);
+  const data = top.map((x) => x.ms);
+
+  if (heatmapChart) heatmapChart.destroy();
+  heatmapChart = new Chart(canvas.getContext("2d"), {
+    type: "bar",
+    data: { labels, datasets: [{ label: "Total test runtime (ms)", data }] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      indexAxis: "y",
+      scales: {
+        x: { ticks: { maxTicksLimit: 6 } },
+      },
+    },
+  });
+}
+
+async function loadDeploymentDetails(asyncId){
+  const deploy = (lastDeployments || []).find((d) => d.Id === asyncId) || { Id: asyncId };
+  const corr = deployToTest.get(asyncId) || null;
+
+  const t0 = performance.now();
+  setBusy(true, "Details…");
+
+  try{
+    const md = await fetchMetadataDeployResult(asyncId);
+    const dr = md.ok ? md.json?.deployResult : null;
+    const details = dr?.details || null;
+
+    // Summary
+    document.getElementById("kvStatus")?.textContent = deploy.Status || dr?.status || "—";
+    document.getElementById("kvComp")?.textContent = String((details?.componentSuccesses?.length || 0) + (details?.componentFailures?.length || 0));
+    document.getElementById("kvCompErr")?.textContent = String(details?.componentFailures?.length || 0);
+    document.getElementById("kvTests")?.textContent = String(dr?.numberTestsTotal ?? deploy.NumberTestsTotal ?? "—");
+    document.getElementById("kvTestErr")?.textContent = String(dr?.numberTestErrors ?? deploy.NumberTestErrors ?? "—");
+    document.getElementById("kvQueue")?.textContent = fmtDuration((deploy.StartDate ? new Date(deploy.StartDate) : new Date()) - (deploy.CreatedDate ? new Date(deploy.CreatedDate) : new Date()));
+    document.getElementById("kvRun")?.textContent = fmtDuration((deploy.CompletedDate ? new Date(deploy.CompletedDate) : new Date()) - (deploy.StartDate ? new Date(deploy.StartDate) : (deploy.CreatedDate ? new Date(deploy.CreatedDate) : new Date())));
+    document.getElementById("kvTotal")?.textContent = fmtDuration((deploy.CompletedDate ? new Date(deploy.CompletedDate) : new Date()) - (deploy.CreatedDate ? new Date(deploy.CreatedDate) : new Date()));
+
+    // Metadata breakdown + failures
+    const breakdown = groupByComponentType(details);
+    const mdLines = [];
+    mdLines.push("Metadata breakdown (by type)\n");
+    for (const g of breakdown.slice(0, 15)){
+      mdLines.push(`${g.type}: ${g.fail} failures, ${g.success} successes`);
+    }
+
+    if (details?.componentFailures?.length){
+      mdLines.push("\nComponent failures (top 25)\n");
+      details.componentFailures.slice(0,25).forEach((f) => {
+        mdLines.push(`- ${f.componentType} ${f.fullName}: ${f.problem}`);
+      });
+    }
+    if (dr?.errorMessage){
+      mdLines.push(`\nDeploy errorMessage: ${dr.errorMessage}`);
+    }
+    document.getElementById("deployDetailsPre")?.textContent = mdLines.join("\n");
+
+    // Insights
+    const insights = buildBottleneckInsights(deploy, details, corr);
+    const insLines = [];
+    insLines.push("Bottleneck insights\n");
+    insights.forEach((i) => insLines.push(`- ${i}`));
+    if (corr?.runId){
+      insLines.push(`\nCorrelated ApexTestRun: ${corr.runId} (${corr.confidence || ""})`);
+      if (corr.durationMs != null) insLines.push(`Test duration: ${fmtDuration(corr.durationMs)}`);
+      if (corr.failures != null) insLines.push(`Test failures: ${corr.failures}`);
+    }
+    document.getElementById("insightsPre")?.textContent = insLines.join("\n");
+
+    // Concurrent jobs
+    const created = deploy.CreatedDate ? new Date(deploy.CreatedDate) : null;
+    const started = deploy.StartDate ? new Date(deploy.StartDate) : created;
+    const completed = deploy.CompletedDate ? new Date(deploy.CompletedDate) : (started ? new Date(started.getTime() + 10*60*1000) : null);
+    if (started && completed){
+      const win = 10 * 60 * 1000;
+      const jobs = await fetchConcurrentJobs(new Date(started.getTime() - win), new Date(completed.getTime() + win));
+      const top = jobs.filter((j) => j.Status && !/Completed|Aborted|Failed/i.test(j.Status)).slice(0, 25);
+      const jobLines = [];
+      jobLines.push(`Concurrent AsyncApexJob (window ±10m): ${jobs.length} found`);
+      if (!jobs.length){
+        jobLines.push("(none)");
+      } else {
+        top.forEach((j) => {
+          jobLines.push(`- ${j.Status} ${j.JobType || ""} ${j.ApexClass?.Name || ""} ${j.MethodName || ""} (${j.Id})`);
+        });
+      }
+      document.getElementById("jobsPre")?.textContent = jobLines.join("\n");
+    }
+
+    // Dependency mapping (simple): deployment failures + correlated failing tests
+    const depLines = [];
+    depLines.push("Dependency map (heuristic)\n");
+    if (details?.componentFailures?.length){
+      depLines.push("Failed components:");
+      details.componentFailures.slice(0, 10).forEach((f) => depLines.push(`- ${f.componentType} ${f.fullName}`));
+    } else {
+      depLines.push("No component failures reported.");
+    }
+    if (corr?.runId){
+      depLines.push("\nCorrelated failing tests:");
+      const soql = `SELECT ApexClass.Name, MethodName, Outcome, Message, StackTrace, RunTime FROM ApexTestResult WHERE ApexTestRunId = '${corr.runId}' AND Outcome != 'Pass' ORDER BY RunTime DESC LIMIT 25`;
+      setLastRequest("tooling query ApexTestResult (dependency)");
+      const tr = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling:true });
+      const fails = tr.ok ? (tr.json?.records || []) : [];
+      if (!fails.length){
+        depLines.push("(no failing test results returned)");
+      } else {
+        fails.forEach((t) => {
+          const cpuRisk = Number(t.RunTime || 0) >= 8000 ? " ⚠️CPU-risk" : "";
+          depLines.push(`- ${t.ApexClass?.Name}.${t.MethodName} (${t.Outcome}) ${t.RunTime}ms${cpuRisk}`);
+        });
+      }
+    }
+    document.getElementById("dependencyPre")?.textContent = depLines.join("\n");
+
+    // Heatmap
+    await renderTestHeatmap(corr?.runId || null);
+
+    // Selected
+    const t1 = performance.now();
+    Auth.setSelected({
+      kind: "DeployRequest",
+      Id: asyncId,
+      Status: deploy.Status || dr?.status,
+      CreatedDate: deploy.CreatedDate,
+      StartDate: deploy.StartDate,
+      CompletedDate: deploy.CompletedDate,
+      metadataDetailsOk: md.ok,
+      detailsFetchMs: Math.round(t1 - t0),
+      correlatedTest: corr,
+    });
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function buildDeployProfile(asyncId){
+  const deploy = (lastDeployments || []).find((d) => d.Id === asyncId) || { Id: asyncId };
+  const corr = deployToTest.get(asyncId) || null;
+  const md = await fetchMetadataDeployResult(asyncId);
+  const details = md.ok ? md.json?.deployResult?.details : null;
+  const groups = groupByComponentType(details);
+  return {
+    id: asyncId,
+    status: deploy.Status || md.json?.deployResult?.status,
+    compTotal: (details?.componentSuccesses?.length || 0) + (details?.componentFailures?.length || 0),
+    compErrors: details?.componentFailures?.length || 0,
+    testErrors: md.json?.deployResult?.numberTestErrors,
+    correlated: corr,
+    typeGroups: groups.slice(0, 10),
+    mdOk: md.ok,
+    mdError: md.ok ? null : Auth.extractSfError(md.json),
+  };
+}
+
+function compareProfiles(a, b){
+  const lines = [];
+  const add = (k, va, vb) => lines.push(`${k}:\n  A: ${va}\n  B: ${vb}`);
+  add("Status", a.status || "—", b.status || "—");
+  add("Components total", a.compTotal || "—", b.compTotal || "—");
+  add("Component errors", a.compErrors || "—", b.compErrors || "—");
+  add("Test errors", a.testErrors || "—", b.testErrors || "—");
+  add("Correlated ApexTestRun", a.correlated?.runId || "—", b.correlated?.runId || "—");
+  add("Correlated failures", a.correlated?.failures ?? "—", b.correlated?.failures ?? "—");
+  add("Correlated test time", fmtDuration(a.correlated?.durationMs ?? null), fmtDuration(b.correlated?.durationMs ?? null));
+  const tg = (p) => (p.typeGroups || []).map((x) => `${x.type}(${x.fail}f/${x.success}s)`).join(", ") || "—";
+  add("Top metadata types", tg(a), tg(b));
+  if (!a.mdOk) lines.push(`\nA metadata details failed: ${a.mdError}`);
+  if (!b.mdOk) lines.push(`\nB metadata details failed: ${b.mdError}`);
+  return lines.join("\n\n");
+}
+
 /* -------------------- Packages -------------------- */
 function pkgRowHtml(r){
   const pkg = r.SubscriberPackage || {};
@@ -595,8 +1030,14 @@ async function refreshActiveTab(isPoll=false){
 
 /* -------------------- Wiring -------------------- */
 document.getElementById("loginBtn")?.addEventListener("click", Auth.login);
-document.getElementById("logoutBtn")?.addEventListener("click", Auth.logout);
+document.getElementById("logoutBtn")?.addEventListener("click", async () => {
+  stopPolling();
+  stopRealtimeMonitor();
+  await Auth.logout();
+});
 document.getElementById("refreshBtn")?.addEventListener("click", () => refreshActiveTab(false));
+document.getElementById("notifyBtn")?.addEventListener("click", requestNotifyPermission);
+document.getElementById("exportBtn")?.addEventListener("click", exportDeploymentsToCSV);
 
 document.getElementById("tabDeployments")?.addEventListener("click", async () => { showTab("deployments"); await refreshActiveTab(false); });
 document.getElementById("tabApexTests")?.addEventListener("click", async () => { showTab("tests"); await refreshActiveTab(false); });
@@ -606,6 +1047,8 @@ document.getElementById("pollInterval")?.addEventListener("change", startPolling
 
 document.getElementById("deployFilter")?.addEventListener("change", () => refreshActiveTab(false));
 document.getElementById("deployLimit")?.addEventListener("change", () => refreshActiveTab(false));
+document.getElementById("deployStart")?.addEventListener("change", () => refreshActiveTab(false));
+document.getElementById("deployEnd")?.addEventListener("change", () => refreshActiveTab(false));
 document.getElementById("deploySearch")?.addEventListener("input", () => {
   const filtered = (lastDeployments||[]).filter(passesDeployFilter).filter(passesDeploySearch);
   renderDeploymentsTable(filtered);
@@ -625,9 +1068,60 @@ document.getElementById("refreshTestsBtn")?.addEventListener("click", () => refr
 document.getElementById("pkgSearch")?.addEventListener("input", () => fetchPackages());
 document.getElementById("refreshPackagesBtn")?.addEventListener("click", fetchPackages);
 
+document.getElementById("compareBtn")?.addEventListener("click", async () => {
+  const a = (document.getElementById("compareA")?.value || "").trim();
+  const b = (document.getElementById("compareB")?.value || "").trim();
+  if (!a || !b){
+    Auth.setText("comparePre", "Enter two deployment async IDs.");
+    return;
+  }
+  setBusy(true, "Compare…");
+  const t0 = performance.now();
+  const p1 = await getDeployProfile(a);
+  const p2 = await getDeployProfile(b);
+  setBusy(false);
+  const dt = (performance.now()-t0)/1000;
+  Auth.setText("comparePre", `Compare (${dt.toFixed(2)}s)\n\nA: ${a}\n${JSON.stringify(p1, null, 2)}\n\nB: ${b}\n${JSON.stringify(p2, null, 2)}`);
+});
+
+document.getElementById("compareBtn")?.addEventListener("click", async () => {
+  const a = (document.getElementById("compareA")?.value || "").trim();
+  const b = (document.getElementById("compareB")?.value || "").trim();
+  if (!a || !b){
+    document.getElementById("comparePre")?.textContent = "Provide two deploy async ids.";
+    return;
+  }
+  setBusy(true, "Compare…");
+  try{
+    const pa = await buildDeployProfile(a);
+    const pb = await buildDeployProfile(b);
+    document.getElementById("comparePre")?.textContent = compareProfiles(pa,pb);
+  } finally {
+    setBusy(false);
+  }
+});
+
+document.getElementById("compareBtn")?.addEventListener("click", async () => {
+  const a = (document.getElementById("compareA")?.value || "").trim();
+  const b = (document.getElementById("compareB")?.value || "").trim();
+  if (!a || !b){
+    document.getElementById("comparePre")?.textContent = "Enter two deploy async ids to compare.";
+    return;
+  }
+  setBusy(true, "Compare…");
+  try{
+    const [pa, pb] = await Promise.all([buildDeployProfile(a), buildDeployProfile(b)]);
+    document.getElementById("comparePre")?.textContent = compareProfiles(pa, pb);
+  } finally {
+    setBusy(false);
+  }
+});
+
 /* -------------------- Init -------------------- */
 (async function init(){
   Auth.wireApiVersionSelect();
+  Auth.wireErrorUI();
+  Auth.wireOrgUI();
 
   Auth.setText("buildPill", BUILD);
   Auth.setText("apiPill", `v${Auth.getApiVersion()}`);
@@ -639,12 +1133,16 @@ document.getElementById("refreshPackagesBtn")?.addEventListener("click", fetchPa
 
   const token = Auth.loadToken();
   if (token?.access_token){
-    Auth.setText("orgPill", token.instance_url || "Connected");
+    await Auth.ensureOrgContext();
+    Auth.renderOrgContext();
+    Auth.renderErrors();
+    Auth.renderOrgDetails();
     Auth.log("Session restored (token found).");
     await refreshTests(true);
     await fetchDeployments();
     setLastRefreshed();
     startPolling();
+    startRealtimeMonitor();
   } else {
     Auth.setText("orgPill", "Not connected");
     Auth.log("Not logged in.");
