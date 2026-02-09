@@ -78,6 +78,20 @@ body{
   font-size: 12px;
 }
 
+.pillLink{
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(73,127,255,.45);
+  background: rgba(73,127,255,.16);
+  color: rgba(255,255,255,.92);
+  font-size: 12px;
+  text-decoration: none;
+}
+.pillLink:hover{ background: rgba(73,127,255,.22); }
+
 .actions{
   display: flex;
   gap: 8px;
@@ -237,6 +251,52 @@ th{
   max-height: 720px;
 }
 
+/* Small stacked panels (right column) */
+.subCard{
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(0,0,0,.14);
+  border-radius: 12px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+.subCardHeader{
+  font-size: 12px;
+  color: rgba(255,255,255,.75);
+  margin-bottom: 8px;
+  letter-spacing: .15px;
+}
+
+.chartWrap{
+  padding: 12px;
+  border-bottom: 1px solid rgba(255,255,255,.08);
+  background: rgba(0,0,0,.10);
+}
+.chartWrap .chartCanvas{
+  height: 160px;
+}
+
+.rowClickable{ cursor: pointer; }
+.rowClickable:hover{ background: rgba(255,255,255,.035); }
+
+.tinyGrid{
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.kv{
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(0,0,0,.18);
+  border-radius: 12px;
+  padding: 8px;
+}
+.kv .k{ color: rgba(255,255,255,.62); font-size: 12px; }
+.kv .v{ font-size: 13px; font-weight: 600; }
+
+@media (max-width: 1100px){
+  .chartWrap .chartCanvas{ height: 140px; }
+  .tinyGrid{ grid-template-columns: 1fr; }
+}
+
 .rowActions{
   display: flex;
   gap: 6px;
@@ -274,3 +334,53 @@ progress{
   .layout{ grid-template-columns: 1fr; }
   .rightPre{ min-height: 260px; }
 }
+
+
+/* Error drawer */
+.drawerOverlay{
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.55);
+  display: none;
+  z-index: 50;
+}
+.drawer{
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: min(560px, 92vw);
+  background: rgba(12,21,39,.96);
+  border-left: 1px solid var(--border);
+  box-shadow: -10px 0 30px rgba(0,0,0,.35);
+  transform: translateX(100%);
+  transition: transform .18s ease;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+}
+.drawerHeader{
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+.drawerHeader .h{
+  font-weight: 650;
+  color: var(--text);
+}
+.drawerBody{
+  padding: 12px;
+  overflow: auto;
+  flex: 1;
+}
+.pill.clickable, .badge.clickable{
+  cursor: pointer;
+}
+.pill.clickable:hover, .badge.clickable:hover{
+  background: rgba(255,255,255,.10);
+}
+
+.pill.error{ border-color: rgba(231, 76, 60, .55); background: rgba(231, 76, 60, .10); }
