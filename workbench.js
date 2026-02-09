@@ -190,6 +190,7 @@ async function run() {
   } catch (e) {
     log(`ERROR: ${e?.message || e}`);
     Auth.showBanner(`Error: ${e?.message || e}`);
+    try { Auth.reportError({ scope: "workbench", title: "Proxy/metadata error", detail: (e?.message || String(e)), request: $("lastRequest")?.textContent || null }); } catch {}
   } finally {
     stopTimer();
     setBusy(false);
@@ -207,6 +208,7 @@ $("logoutBtn")?.addEventListener("click", Auth.logout);
 
 /* ---------- Init ---------- */
 (async function init() {
+  Auth.wireErrorUI();
   Auth.wireApiVersionSelect();
 
   Auth.setText("buildPill", BUILD);
@@ -217,7 +219,10 @@ $("logoutBtn")?.addEventListener("click", Auth.logout);
 
   const token = Auth.loadToken();
   if (token?.access_token) {
-    Auth.setText("orgPill", token.instance_url || "Connected");
+    await Auth.ensureOrgContext();
+    Auth.renderOrgContext();
+    Auth.renderErrors();
+    Auth.renderOrgDetails();
     log("Session restored.");
   } else {
     Auth.setText("orgPill", "Not connected");
