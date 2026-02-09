@@ -1,3 +1,4 @@
+<!-- index.html (FULL FILE - UPDATED) -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -5,18 +6,14 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>SFDC Deployment Tracker (Web)</title>
   <meta name="color-scheme" content="dark light" />
-
-  <!-- Styles -->
-  <link rel="stylesheet" href="./styles.css?v=2026-02-09.2" />
-
-  <!-- Charts -->
+  <link rel="stylesheet" href="./styles.css?v=2026-02-09.4" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 
 <body>
   <div class="app">
 
-    <!-- ================= TOP BAR ================= -->
+    <!-- TOP BAR -->
     <div class="topbar">
       <div class="title">
         <h1>SFDC Deployment Tracker (Web)</h1>
@@ -33,8 +30,11 @@
 
       <div class="actions">
         <select id="apiVersionSelect" title="API version"></select>
+
+        <!-- Auth buttons: visibility controlled by auth.js -->
         <button id="loginBtn">Login</button>
         <button id="logoutBtn">Logout</button>
+
         <button id="refreshBtn">Refresh</button>
         <button id="clearStorageBtn">Clear storage</button>
         <button id="orgDetailsBtn">Org details</button>
@@ -42,10 +42,9 @@
       </div>
     </div>
 
-    <!-- ================= BANNERS ================= -->
     <div id="authBanner" class="banner"></div>
 
-    <!-- ================= NAV TABS ================= -->
+    <!-- NAV -->
     <div class="tabs">
       <div class="tab active" id="tabDeployments">Deployments</div>
       <div class="tab" id="tabApexTests">Apex tests</div>
@@ -54,10 +53,10 @@
       <a class="tab" href="./workbench.html">Workbench tester</a>
     </div>
 
-    <!-- ================= CONTROLS: DEPLOYMENTS ================= -->
+    <!-- CONTROLS: DEPLOYMENTS -->
     <div class="controls" id="deploymentsControls">
       <span class="label">Auto-refresh</span>
-      <select id="pollInterval">
+      <select id="pollInterval" title="How often to auto-refresh. 0 disables polling.">
         <option value="0">Off</option>
         <option value="10">10s</option>
         <option value="30" selected>30s</option>
@@ -65,7 +64,7 @@
       </select>
 
       <span class="label">Show</span>
-      <select id="deployFilter">
+      <select id="deployFilter" title="Filter deployments by status or checkOnly">
         <option value="all" selected>All</option>
         <option value="active">Active</option>
         <option value="failed">Failed</option>
@@ -74,28 +73,52 @@
       </select>
 
       <span class="label">Limit</span>
-      <select id="deployLimit">
+      <select id="deployLimit" title="How many DeployRequest rows to query">
         <option>10</option>
         <option selected>20</option>
         <option>50</option>
         <option>100</option>
       </select>
 
-      <input id="deploySearch" placeholder="Search status/type/user/id/error…" style="min-width:320px;" />
+      <input id="deploySearch" placeholder="Search status/type/user/id/error…" title="Client-side search across fetched rows" style="min-width: 320px;" />
 
-      <span class="label">From</span>
-      <input type="date" id="fromDate" />
-      <span class="label">To</span>
-      <input type="date" id="toDate" />
+      <!-- DATE RANGE FILTER REMOVED per request -->
 
-      <button id="exportCsvBtn">Export CSV</button>
-      <button id="enableAlertsBtn">Enable alerts</button>
+      <button id="exportCsvBtn" title="Export current rows to CSV">Export CSV</button>
+      <button id="enableAlertsBtn" title="Enable browser notifications">Enable alerts</button>
+
+      <span class="muted small" id="activeCountPill" style="margin-left:auto;">Active: —</span>
     </div>
 
-    <!-- ================= MAIN LAYOUT ================= -->
-    <div class="layout">
+    <!-- CONTROLS: APEX TESTS -->
+    <div class="controls" id="apexTestsControls" style="display:none;">
+      <span class="label">Limit</span>
+      <select id="testLimit" title="How many ApexTestRun rows to fetch">
+        <option>10</option>
+        <option selected>20</option>
+        <option>50</option>
+        <option>100</option>
+      </select>
 
-      <!-- ===== LEFT: RESULTS ===== -->
+      <span class="label">Show</span>
+      <select id="testFilter" title="Filter test runs by outcome">
+        <option value="all" selected>All</option>
+        <option value="failed">Failed only</option>
+        <option value="passed">Passed only</option>
+      </select>
+
+      <input id="testSearch" placeholder="Search user/status/run id…" title="Client-side search across test runs" style="min-width: 320px;" />
+      <button id="refreshTestsBtn" title="Refresh test runs now">Refresh tests</button>
+    </div>
+
+    <!-- CONTROLS: PACKAGES -->
+    <div class="controls" id="packagesControls" style="display:none;">
+      <input id="pkgSearch" placeholder="Search package name/namespace…" title="Search packages client-side" style="min-width: 320px;" />
+      <button id="refreshPackagesBtn" title="Refresh installed packages inventory">Refresh packages</button>
+    </div>
+
+    <div class="layout">
+      <!-- LEFT: RESULTS -->
       <div class="card">
         <div class="cardHeader">
           <div class="h" id="resultsTitle">Results (Deployments)</div>
@@ -106,30 +129,29 @@
         </div>
 
         <div class="cardBody" style="padding:0;">
-          <!-- Trend chart -->
           <div style="padding:12px;">
+            <div class="h" style="margin-bottom:8px;">Duration trend</div>
             <canvas id="trendChart" height="120"></canvas>
             <div class="hint">Uses completed deployments in the current result set.</div>
           </div>
 
-          <!-- Deployments table -->
-          <div style="max-height:600px; overflow:auto;">
+          <div style="max-height: 720px; overflow:auto;">
             <table>
               <thead>
                 <tr>
-                  <th>Status</th>
-                  <th>User</th>
-                  <th>Type</th>
-                  <th>Created</th>
-                  <th>Started</th>
-                  <th>Completed</th>
-                  <th title="Time spent waiting for execution">Queue time</th>
-                  <th title="Execution duration">Run time</th>
-                  <th>Total time</th>
-                  <th>Tests</th>
-                  <th>Test fails</th>
-                  <th>Test time</th>
-                  <th>Id</th>
+                  <th title="DeployRequest.Status">Status</th>
+                  <th title="DeployRequest.CreatedBy.Name">User</th>
+                  <th title="DeployRequest.Type + checkOnly">Type</th>
+                  <th title="DeployRequest.CreatedDate">Created</th>
+                  <th title="DeployRequest.StartDate">Started</th>
+                  <th title="DeployRequest.CompletedDate">Completed</th>
+                  <th title="Queue time = StartDate - CreatedDate">Queue time</th>
+                  <th title="Run time = CompletedDate - StartDate">Run time</th>
+                  <th title="Total time = CompletedDate - CreatedDate">Total time</th>
+                  <th title="Correlation to an ApexTestRun near this deploy">Tests</th>
+                  <th title="Failures for correlated run">Test fails</th>
+                  <th title="Duration for correlated run">Test time</th>
+                  <th title="DeployRequest.Id">Id</th>
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -141,7 +163,7 @@
         </div>
       </div>
 
-      <!-- ===== RIGHT: DETAILS / LOG ===== -->
+      <!-- RIGHT: DETAILS -->
       <div class="card">
         <div class="cardHeader">
           <div class="h">Details / Insights / Log</div>
@@ -149,14 +171,11 @@
             <span id="busyPill" class="badge">Idle</span>
           </div>
         </div>
-
         <div class="cardBody">
-          <pre id="selectedPre" class="rightPre">Nothing selected.</pre>
+          <pre id="selectedPre" class="rightPre" style="min-height: 140px;">Nothing selected.</pre>
 
           <h4>Deployment details (row-click)</h4>
-          <div id="deployDetailsPanel" class="hint">
-            Select a deployment row to load details.
-          </div>
+          <div id="deployDetailsPanel" class="hint">Select a deployment row to load details.</div>
 
           <h4>Bottleneck insights</h4>
           <div id="insightsPanel" class="hint">—</div>
@@ -181,7 +200,7 @@
       </div>
     </div>
 
-    <!-- ================= DRAWERS ================= -->
+    <!-- ORG DRAWER -->
     <div id="orgDetailsDrawer" class="drawer">
       <h3>Org details</h3>
       <pre id="orgDetailsPre">Loading…</pre>
@@ -193,6 +212,7 @@
       </div>
     </div>
 
+    <!-- ERRORS DRAWER -->
     <div id="errorsDrawer" class="drawer">
       <h3>Errors</h3>
       <pre id="errorsPre">No errors.</pre>
@@ -204,8 +224,7 @@
 
   </div>
 
-  <!-- ================= SCRIPTS ================= -->
-  <script src="./auth.js?v=2026-02-09.2"></script>
-  <script src="./app.js?v=2026-02-09.2"></script>
+  <script src="./auth.js?v=2026-02-09.4"></script>
+  <script src="./app.js?v=2026-02-09.4"></script>
 </body>
 </html>
