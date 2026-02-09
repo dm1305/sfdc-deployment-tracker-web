@@ -1,53 +1,157 @@
-Metadata Inventory (Tooling-based)
-Org URL: Not connected
-Instance: —
-Org Id: —
-User: —
-API: —
-API max: —
-Build: —
-Login Logout Deployments Workbench Mode Org details Errors: 0
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Metadata Inventory</title>
+  <meta name="color-scheme" content="dark light" />
+  <link rel="stylesheet" href="./styles.css?v=2026-02-09.2" />
+</head>
 
-Scope
-        Auto (discover available)
-        Code
-        Automation
-        Metadata-ish
-        Security
-        Content
-        All (may be slow)
-       include large types (Profile/PermissionSet) Per-type limit
-        100
-        250
-        500
-        1000
-       Modified after Run inventory Download CSV
-Idle 0%
-Results (Inventory)
-Last run: — Last request: —
-Type
-API name
-Namespace
-Last modified
-Last modified by
-Created
-Created by
-Id
-Not loaded.
-Errors: 0
-Selected / Log
-Idle
-Nothing selected.
+<body>
+  <div class="app">
 
-Ready.
-Org details
-Refresh Close
-Loading…
-Errors
-Clear Close
-No errors.
-Errors
-Clear
-Close
-No errors recorded on this page.
-Tip: errors are recorded when a fetch fails (HTTP status, network error, session expiry), plus uncaught JS errors.
+    <!-- TOP BAR -->
+    <div class="topbar">
+      <div class="title">
+        <h1>Metadata Inventory</h1>
+        <div class="pills">
+          <div class="pill">Org: <code id="orgPill">Not connected</code></div>
+          <div class="pill">Instance: <code id="instancePill">—</code></div>
+          <div class="pill">Org Id: <code id="orgIdPill">—</code></div>
+          <div class="pill">User: <code id="userPill">—</code></div>
+          <div class="pill">API: <code id="apiPill">—</code></div>
+          <div class="pill">API max: <code id="apiMaxPill">—</code></div>
+          <div class="pill">Build: <code id="buildPill">—</code></div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <select id="apiVersionSelect" title="API version"></select>
+        <button id="loginBtn">Login</button>
+        <button id="logoutBtn">Logout</button>
+        <a class="tab" href="./index.html">Deployments</a>
+        <a class="tab" href="./workbench.html">Workbench tester</a>
+        <button id="orgDetailsBtn">Org details</button>
+        <button id="errorsBtn">Errors: <span id="errorCount">0</span></button>
+      </div>
+    </div>
+
+    <div id="authBanner" class="banner"></div>
+
+    <!-- CONTROLS -->
+    <div class="controls">
+      <span class="label">Scope</span>
+      <select id="invScope">
+        <option value="auto" selected>Auto (discover available)</option>
+        <option value="code">Code</option>
+        <option value="automation">Automation</option>
+        <option value="metadata">Metadata-ish</option>
+        <option value="security">Security</option>
+        <option value="content">Content</option>
+        <option value="all">All (may be slow)</option>
+      </select>
+
+      <label class="muted small" style="display:flex;gap:8px;align-items:center;">
+        <input type="checkbox" id="includeLargeTypes" />
+        include large types (Profile/PermissionSet)
+      </label>
+
+      <span class="label">Per-type limit</span>
+      <select id="invLimit">
+        <option value="100">100</option>
+        <option value="250" selected>250</option>
+        <option value="500">500</option>
+        <option value="1000">1000</option>
+      </select>
+
+      <input id="typeFilter" placeholder="Type filter (e.g. ApexClass, CustomObject…)" style="min-width:260px;" />
+      <input id="textFilter" placeholder="Search name/id/user…" style="min-width:260px;" />
+
+      <span class="label">Modified after</span>
+      <input id="modifiedAfter" type="date" />
+
+      <button id="runInventoryBtn">Run inventory</button>
+      <button id="downloadCsvBtn" disabled>Download CSV</button>
+
+      <div class="progressWrap" style="margin-left:auto; display:flex; gap:10px; align-items:center;">
+        <span class="muted small" id="lastRefreshed">Last run: —</span>
+        <span class="muted small" id="lastRequest">Last request: —</span>
+        <progress id="invProgress" value="0" max="100"></progress>
+        <span class="muted small" id="progressPct">0%</span>
+        <span class="badge" id="busyPill">Idle</span>
+      </div>
+    </div>
+
+    <!-- LAYOUT -->
+    <div class="layout">
+      <div class="card">
+        <div class="cardHeader">
+          <div class="h">Results</div>
+          <div class="meta">
+            <span class="muted" id="progressLabel">Idle</span>
+          </div>
+        </div>
+        <div class="cardBody" style="padding:0;">
+          <div style="max-height:720px; overflow:auto;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>API name</th>
+                  <th>Namespace</th>
+                  <th>Last modified</th>
+                  <th>Modified by</th>
+                  <th>Created</th>
+                  <th>Created by</th>
+                  <th>Id</th>
+                </tr>
+              </thead>
+              <tbody id="invTbody">
+                <tr><td colspan="8" class="muted small">Not loaded.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="cardHeader">
+          <div class="h">Selected / Log</div>
+          <div class="meta"></div>
+        </div>
+        <div class="cardBody">
+          <pre id="selectedPre" class="rightPre" style="min-height: 180px;">Nothing selected.</pre>
+          <div style="height:10px;"></div>
+          <pre id="logPre" class="rightPre">Ready.</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- DRAWERS -->
+    <div id="orgDetailsDrawer" class="drawer">
+      <h3>Org details</h3>
+      <pre id="orgDetailsPre">Loading…</pre>
+      <div class="row">
+        <a id="trustSearchLink" target="_blank">Trust (search)</a>
+        <a id="trustInstanceLink" target="_blank">Trust (instance)</a>
+        <button id="refreshOrgDetailsBtn">Refresh</button>
+        <button class="closeDrawer">Close</button>
+      </div>
+    </div>
+
+    <div id="errorsDrawer" class="drawer">
+      <h3>Errors</h3>
+      <pre id="errorsPre">No errors.</pre>
+      <div class="row">
+        <button id="clearErrorsBtn">Clear</button>
+        <button class="closeDrawer">Close</button>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="./auth.js?v=2026-02-09.2"></script>
+  <script src="./inventory.js?v=2026-02-09.2"></script>
+</body>
+</html>
