@@ -1,5 +1,5 @@
 // auth.js (FULL FILE - UPDATED)
-// v2026-02-09.7
+// v2026-02-09.9
 // Purpose: OAuth (Authorization Code + PKCE) + shared Salesforce REST helper + shared UI wiring.
 // Notes:
 // - Works for GitHub Pages / localhost.
@@ -10,7 +10,7 @@
 (() => {
   "use strict";
 
-  const BUILD = "2026-02-09.7";
+    const BUILD = "2026-02-09.9";
 
   const LS = {
     clientId: "sfdc_client_id",
@@ -204,19 +204,28 @@
     setPill("apiPill", apiVersion());
     setPill("buildPill", BUILD);
 
-    // Try identity endpoint (id URL returned by token response)
-    if (tok.idUrl) {
-      try {
-        const ident = await sfFetch(tok.idUrl);
-        // identity payload typically includes user_id and organization_id and username
-        setPill("orgIdPill", ident.organization_id || "—");
-        setPill("userPill", ident.username || "—");
-        setPill("orgPill", ident.organization_id ? ident.organization_id : "Connected");
-      } catch (e) {
-        // Not fatal
-        pushError({ where: "identity", message: e.message });
+    // IMPORTANT: Do not call token response "id" URL (often on login.salesforce.com) from the browser;
+    // it does not include CORS headers and will be blocked. Use same-instance endpoints instead.
+
+    try {
+      const me = await sfFetch(`/services/data/${apiVersion()}/chatter/users/me`);
+      if (me) setPill("userPill", me.username || me.email || me.name || "—");
+    } catch (e) {
+      pushError({ where: "chatter_me", message: e.message });
+    }
+
+    try {
+      const soql = "SELECT Id, Name FROM Organization LIMIT 1";
+      const orgRes = await sfFetch(`/services/data/${apiVersion()}/query/?q=${encodeURIComponent(soql)}`);
+      const org = orgRes?.records?.[0];
+      if (org) {
+        setPill("orgIdPill", org.Id || "—");
+        setPill("orgPill", org.Name ? org.Name : (org.Id || "Connected"));
+      } else {
+        setPill("orgPill", "Connected");
       }
-    } else {
+    } catch (e) {
+      pushError({ where: "org_query", message: e.message });
       setPill("orgPill", "Connected");
     }
 
@@ -397,6 +406,8 @@
     handleRedirectIfPresent,
     sfFetch,
     apiVersion,
+    // Backwards-compat alias used by inventory/workbench pages
+    writeApiVersionSelect: ensureApiVersionSelect,
     renderOrgDetails,
     renderErrorsDrawer,
     pushError,
