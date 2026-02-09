@@ -1,78 +1,211 @@
-SFDC Deployment Tracker (Web)
-Org URL: Not connected
-Instance: —
-Org Id: —
-User: —
-API: —
-API max: —
-Build: —
-          v65.0
-          v64.0
-          v63.0
-          v62.0
-          v61.0
-         Login Org details Errors: 0 Logout Refresh Metadata inventory Workbench tester
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>SFDC Deployment Tracker (Web)</title>
+  <meta name="color-scheme" content="dark light" />
 
-Deployments
-Apex tests
-Packages
-Enable alerts Export CSV Auto-refresh
-        Off
-        10s
-        30s
-        60s
-       Show
-        All
-        Active
-        Failed
-        Validations (checkOnly)
-        Real deploys
-       Limit
-        10
-        20
-        50
-        100
-       From To
-Active: —
-Results (Deployments)
-Last refreshed: — Last request: —
-Duration trend
-Uses completed deployments in the current result set.
+  <!-- Styles -->
+  <link rel="stylesheet" href="./styles.css?v=2026-02-09.2" />
 
-Status
-User
-Type
-Created
-Started
-Completed
-Queue time
-Run time
-Total time
-Tests
-Test fails
-Test time
-Id
-Actions
-Not loaded.
-Details / Insights / Log
-Idle
-Selected
-Nothing selected.
-Deployment details (row-click)
-Select a deployment row to load details.
-Bottleneck insights
-—
-Test heatmap (slowest Apex classes)
+  <!-- Charts -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
 
-Aggregated from ApexTestResult runtimes for the correlated test run (if found). Flags tests ≥ 8000ms as CPU timeout risk.
-Side-by-side compare
-Compare
-Enter two IDs then click Compare.
-Log
-Ready.
-Org details
-Refresh Close
-Loading…
-Errors
-Clear Close
-No errors.
+<body>
+  <div class="app">
+
+    <!-- ================= TOP BAR ================= -->
+    <div class="topbar">
+      <div class="title">
+        <h1>SFDC Deployment Tracker (Web)</h1>
+        <div class="pills">
+          <div class="pill">Org: <code id="orgPill">Not connected</code></div>
+          <div class="pill">Instance: <code id="instancePill">—</code></div>
+          <div class="pill">Org Id: <code id="orgIdPill">—</code></div>
+          <div class="pill">User: <code id="userPill">—</code></div>
+          <div class="pill">API: <code id="apiPill">—</code></div>
+          <div class="pill">API max: <code id="apiMaxPill">—</code></div>
+          <div class="pill">Build: <code id="buildPill">—</code></div>
+        </div>
+      </div>
+
+      <div class="actions">
+        <select id="apiVersionSelect" title="API version"></select>
+        <button id="loginBtn">Login</button>
+        <button id="logoutBtn">Logout</button>
+        <button id="refreshBtn">Refresh</button>
+        <button id="clearStorageBtn">Clear storage</button>
+        <button id="orgDetailsBtn">Org details</button>
+        <button id="errorsBtn">Errors: <span id="errorCount">0</span></button>
+      </div>
+    </div>
+
+    <!-- ================= BANNERS ================= -->
+    <div id="authBanner" class="banner"></div>
+
+    <!-- ================= NAV TABS ================= -->
+    <div class="tabs">
+      <div class="tab active" id="tabDeployments">Deployments</div>
+      <div class="tab" id="tabApexTests">Apex tests</div>
+      <div class="tab" id="tabPackages">Packages</div>
+      <a class="tab" href="./inventory.html">Metadata inventory</a>
+      <a class="tab" href="./workbench.html">Workbench tester</a>
+    </div>
+
+    <!-- ================= CONTROLS: DEPLOYMENTS ================= -->
+    <div class="controls" id="deploymentsControls">
+      <span class="label">Auto-refresh</span>
+      <select id="pollInterval">
+        <option value="0">Off</option>
+        <option value="10">10s</option>
+        <option value="30" selected>30s</option>
+        <option value="60">60s</option>
+      </select>
+
+      <span class="label">Show</span>
+      <select id="deployFilter">
+        <option value="all" selected>All</option>
+        <option value="active">Active</option>
+        <option value="failed">Failed</option>
+        <option value="checkonly">Validations (checkOnly)</option>
+        <option value="real">Real deploys</option>
+      </select>
+
+      <span class="label">Limit</span>
+      <select id="deployLimit">
+        <option>10</option>
+        <option selected>20</option>
+        <option>50</option>
+        <option>100</option>
+      </select>
+
+      <input id="deploySearch" placeholder="Search status/type/user/id/error…" style="min-width:320px;" />
+
+      <span class="label">From</span>
+      <input type="date" id="fromDate" />
+      <span class="label">To</span>
+      <input type="date" id="toDate" />
+
+      <button id="exportCsvBtn">Export CSV</button>
+      <button id="enableAlertsBtn">Enable alerts</button>
+    </div>
+
+    <!-- ================= MAIN LAYOUT ================= -->
+    <div class="layout">
+
+      <!-- ===== LEFT: RESULTS ===== -->
+      <div class="card">
+        <div class="cardHeader">
+          <div class="h" id="resultsTitle">Results (Deployments)</div>
+          <div class="meta">
+            <span id="lastRefreshed" class="muted">Last refreshed: —</span>
+            <span id="lastRequest" class="muted">Last request: —</span>
+          </div>
+        </div>
+
+        <div class="cardBody" style="padding:0;">
+          <!-- Trend chart -->
+          <div style="padding:12px;">
+            <canvas id="trendChart" height="120"></canvas>
+            <div class="hint">Uses completed deployments in the current result set.</div>
+          </div>
+
+          <!-- Deployments table -->
+          <div style="max-height:600px; overflow:auto;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Status</th>
+                  <th>User</th>
+                  <th>Type</th>
+                  <th>Created</th>
+                  <th>Started</th>
+                  <th>Completed</th>
+                  <th title="Time spent waiting for execution">Queue time</th>
+                  <th title="Execution duration">Run time</th>
+                  <th>Total time</th>
+                  <th>Tests</th>
+                  <th>Test fails</th>
+                  <th>Test time</th>
+                  <th>Id</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody id="deploymentsTbody">
+                <tr><td colspan="14" class="muted small">Not loaded.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== RIGHT: DETAILS / LOG ===== -->
+      <div class="card">
+        <div class="cardHeader">
+          <div class="h">Details / Insights / Log</div>
+          <div class="meta">
+            <span id="busyPill" class="badge">Idle</span>
+          </div>
+        </div>
+
+        <div class="cardBody">
+          <pre id="selectedPre" class="rightPre">Nothing selected.</pre>
+
+          <h4>Deployment details (row-click)</h4>
+          <div id="deployDetailsPanel" class="hint">
+            Select a deployment row to load details.
+          </div>
+
+          <h4>Bottleneck insights</h4>
+          <div id="insightsPanel" class="hint">—</div>
+
+          <h4>Test heatmap (slowest Apex classes)</h4>
+          <div class="hint">
+            Aggregated from ApexTestResult runtimes for the correlated test run (if found).
+            Flags tests ≥ 8000ms as CPU timeout risk.
+          </div>
+          <canvas id="heatmapChart" height="160"></canvas>
+
+          <h4>Side-by-side compare</h4>
+          <div class="row">
+            <input id="compareIdA" placeholder="Deploy Id A" />
+            <input id="compareIdB" placeholder="Deploy Id B" />
+            <button id="compareBtn">Compare</button>
+          </div>
+
+          <h4>Log</h4>
+          <pre id="logPre" class="rightPre">Ready.</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= DRAWERS ================= -->
+    <div id="orgDetailsDrawer" class="drawer">
+      <h3>Org details</h3>
+      <pre id="orgDetailsPre">Loading…</pre>
+      <div class="row">
+        <a id="trustSearchLink" target="_blank">Trust (search)</a>
+        <a id="trustInstanceLink" target="_blank">Trust (instance)</a>
+        <button id="refreshOrgDetailsBtn">Refresh</button>
+        <button class="closeDrawer">Close</button>
+      </div>
+    </div>
+
+    <div id="errorsDrawer" class="drawer">
+      <h3>Errors</h3>
+      <pre id="errorsPre">No errors.</pre>
+      <div class="row">
+        <button id="clearErrorsBtn">Clear</button>
+        <button class="closeDrawer">Close</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ================= SCRIPTS ================= -->
+  <script src="./auth.js?v=2026-02-09.2"></script>
+  <script src="./app.js?v=2026-02-09.2"></script>
+</body>
+</html>
