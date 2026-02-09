@@ -1,288 +1,387 @@
+// inventory.js
+// Tooling-based "inventory" scan of many metadata-like sObjects.
+// NOTE: Tooling API does not expose *all* Metadata API types; this page reports what Tooling can query.
+//
+// Improvements in this version:
+// - Expanded default target list (many more tooling objects)
+// - Optional inclusion of large types (Profile/PermissionSet)
+// - Client-side filters (type + free-text + modified-after)
+// - Progress bar + per-type logging
+// - CSV download
+
 const BUILD = Auth.BUILD;
+
 let invRows = [];
+let lastRawRows = [];
+
+function $(id){ return document.getElementById(id); }
 
 function setBusy(isBusy, label=null){
-  const pill = document.getElementById("busyPill");
+  const pill = $("busyPill");
   if (pill) pill.textContent = isBusy ? (label || "Working…") : "Idle";
-  document.getElementById("runInventoryBtn").disabled = !!isBusy;
+  const btn = $("runInventoryBtn");
+  if (btn) btn.disabled = !!isBusy;
+  const dl = $("downloadCsvBtn");
+  if (dl) dl.disabled = !!isBusy || !invRows.length;
 }
 
 function setLastRun(){
-  const el = document.getElementById("lastRefreshed");
-  if (el) el.textContent = `Last run: ${new Date().toISOString().replace("T"," ").replace("Z","Z")}`;
+  Auth.setText("lastRefreshed", `Last run: ${new Date().toISOString().replace("T"," ").replace("Z","Z")}`);
 }
 
-function setLastRequest(text){
-  const el = document.getElementById("lastRequest");
-  if (el) el.textContent = `Last request: ${text}`;
+function setLastRequest(txt){
+  Auth.setText("lastRequest", `Last request: ${txt}`);
 }
 
-/* ---------- Progress bar ---------- */
 function setProgress(pct, label){
-  const p = Math.max(0, Math.min(100, Math.round(pct)));
-  const bar = document.getElementById("invProgress");
-  const pctEl = document.getElementById("progressPct");
-  const lbl = document.getElementById("progressLabel");
-  if (bar) bar.value = p;
-  if (pctEl) pctEl.textContent = `${p}%`;
-  if (lbl) lbl.textContent = label || (p === 100 ? "Done" : "Working…");
+  const prog = $("invProgress");
+  const pctEl = $("progressPct");
+  const lbl = $("progressLabel");
+  if (prog) prog.value = Math.max(0, Math.min(100, pct));
+  if (pctEl) pctEl.textContent = `${Math.round(pct)}%`;
+  if (lbl) lbl.textContent = label || "";
 }
 
-/* ---------- Inventory definition ---------- */
-/**
- * NOTE: This is Tooling-based inventory (fast, CORS-friendly in browser),
- * not a full Metadata API fileProperties list.
- * It still covers many “files” people care about (Apex, LWC, Aura, Flow, StaticResource).
- */
-const INVENTORY_TYPES = [
-  {
-    key: "ApexClass",
-    scope: "code",
-    nameField: "Name",
-    soql: (limit) => `
-      SELECT Id, Name, NamespacePrefix,
-             CreatedDate, CreatedBy.Name,
-             LastModifiedDate, LastModifiedBy.Name
-      FROM ApexClass
-      ORDER BY LastModifiedDate DESC
-      LIMIT ${limit}
-    `.trim()
-  },
-  {
-    key: "ApexTrigger",
-    scope: "code",
-    nameField: "Name",
-    soql: (limit) => `
-      SELECT Id, Name, NamespacePrefix,
-             CreatedDate, CreatedBy.Name,
-             LastModifiedDate, LastModifiedBy.Name
-      FROM ApexTrigger
-      ORDER BY LastModifiedDate DESC
-      LIMIT ${limit}
-    `.trim()
-  },
-  {
-    key: "LightningComponentBundle",
-    scope: "code",
-    nameField: "DeveloperName",
-    soql: (limit) => `
-      SELECT Id, DeveloperName, NamespacePrefix,
-             CreatedDate, CreatedBy.Name,
-             LastModifiedDate, LastModifiedBy.Name
-      FROM LightningComponentBundle
-      ORDER BY LastModifiedDate DESC
-      LIMIT ${limit}
-    `.trim()
-  },
-  {
-    key: "AuraDefinitionBundle",
-    scope: "code",
-    nameField: "DeveloperName",
-    soql: (limit) => `
-      SELECT Id, DeveloperName, NamespacePrefix,
-             CreatedDate, CreatedBy.Name,
-             LastModifiedDate, LastModifiedBy.Name
-      FROM AuraDefinitionBundle
-      ORDER BY LastModifiedDate DESC
-      LIMIT ${limit}
-    `.trim()
-  },
-  {
-    key: "Flow",
-    scope: "automation",
-    nameField: "DeveloperName",
-    soql: (limit) => `
-      SELECT Id, DeveloperName, NamespacePrefix,
-             CreatedDate, CreatedBy.Name,
-             LastModifiedDate, LastModifiedBy.Name
-      FROM Flow
-      ORDER BY LastModifiedDate DESC
-      LIMIT ${limit}
-    `.trim()
-  },
-  {
-    key: "StaticResource",
-    scope: "assets",
-    nameField: "Name",
-    soql: (limit) => `
-      SELECT Id, Name, NamespacePrefix,
-             CreatedDate, CreatedBy.Name,
-             LastModifiedDate, LastModifiedBy.Name
-      FROM StaticResource
-      ORDER BY LastModifiedDate DESC
-      LIMIT ${limit}
-    `.trim()
+function normalizeText(s){
+  return String(s || "").toLowerCase();
+}
+
+/* -------------------- Target lists -------------------- */
+
+function baseTargets(){
+  // Curated list of common metadata-ish Tooling sObjects.
+  // Each entry: { typeLabel, sobject, nameField }
+  return [
+    { typeLabel:"ApexClass", sobject:"ApexClass", nameField:"Name" },
+    { typeLabel:"ApexTrigger", sobject:"ApexTrigger", nameField:"Name" },
+    { typeLabel:"ApexPage", sobject:"ApexPage", nameField:"Name" },
+    { typeLabel:"ApexComponent", sobject:"ApexComponent", nameField:"Name" },
+    { typeLabel:"AuraDefinitionBundle", sobject:"AuraDefinitionBundle", nameField:"DeveloperName" },
+    { typeLabel:"LightningComponentBundle", sobject:"LightningComponentBundle", nameField:"DeveloperName" },
+    { typeLabel:"StaticResource", sobject:"StaticResource", nameField:"Name" },
+
+    { typeLabel:"CustomObject", sobject:"CustomObject", nameField:"DeveloperName" },
+    { typeLabel:"CustomField", sobject:"CustomField", nameField:"DeveloperName" },
+    { typeLabel:"Layout", sobject:"Layout", nameField:"Name" },
+    { typeLabel:"RecordType", sobject:"RecordType", nameField:"DeveloperName" },
+    { typeLabel:"ValidationRule", sobject:"ValidationRule", nameField:"ValidationName" },
+
+    { typeLabel:"Flow", sobject:"Flow", nameField:"DeveloperName" },
+    { typeLabel:"FlowDefinition", sobject:"FlowDefinition", nameField:"DeveloperName" },
+
+    { typeLabel:"EmailTemplate", sobject:"EmailTemplate", nameField:"DeveloperName" },
+    { typeLabel:"Report", sobject:"Report", nameField:"DeveloperName" },
+    { typeLabel:"Dashboard", sobject:"Dashboard", nameField:"DeveloperName" },
+
+    { typeLabel:"RemoteSiteSetting", sobject:"RemoteSiteSetting", nameField:"DeveloperName" },
+    { typeLabel:"NamedCredential", sobject:"NamedCredential", nameField:"DeveloperName" },
+    { typeLabel:"AuthProvider", sobject:"AuthProvider", nameField:"DeveloperName" },
+
+    { typeLabel:"CustomMetadata", sobject:"CustomMetadata", nameField:"DeveloperName" },
+    { typeLabel:"CustomLabel", sobject:"ExternalString", nameField:"Name" }, // orgs may not have this; will be skipped on error
+
+    { typeLabel:"CustomPermission", sobject:"CustomPermission", nameField:"DeveloperName" },
+    { typeLabel:"PermissionSetGroup", sobject:"PermissionSetGroup", nameField:"DeveloperName" },
+  ];
+}
+
+function largeTargets(){
+  return [
+    { typeLabel:"PermissionSet", sobject:"PermissionSet", nameField:"Name" },
+    { typeLabel:"Profile", sobject:"Profile", nameField:"Name" },
+  ];
+}
+
+function scopeTargets(scope){
+  const all = baseTargets();
+
+  if (scope === "code") {
+    return all.filter(t => ["ApexClass","ApexTrigger","ApexPage","ApexComponent","AuraDefinitionBundle","LightningComponentBundle","StaticResource"].includes(t.typeLabel));
   }
-];
+  if (scope === "automation") {
+    return all.filter(t => ["Flow","FlowDefinition","ValidationRule","RecordType"].includes(t.typeLabel));
+  }
+  if (scope === "security") {
+    return all.filter(t => ["RemoteSiteSetting","NamedCredential","AuthProvider","CustomPermission","PermissionSetGroup"].includes(t.typeLabel));
+  }
+  if (scope === "content") {
+    return all.filter(t => ["EmailTemplate","Report","Dashboard"].includes(t.typeLabel));
+  }
+  if (scope === "metadata") {
+    return all.filter(t => ["CustomObject","CustomField","Layout","CustomMetadata","CustomPermission"].includes(t.typeLabel));
+  }
 
-function currentInventorySet(){
-  const scope = document.getElementById("invScope")?.value || "all";
-  if (scope === "all") return INVENTORY_TYPES;
-  return INVENTORY_TYPES.filter(t => t.scope === scope);
+  // "all" and "auto" both use the same curated list here (Tooling doesn't fully cover Metadata API)
+  return all;
 }
 
-function fmtTime(s){
-  if (!s) return "—";
-  const d = new Date(s);
-  return Number.isFinite(d.getTime()) ? d.toISOString().replace("T"," ").replace("Z","Z") : "—";
+/* -------------------- Query helpers -------------------- */
+
+function buildSoql(t, limit, modifiedAfterIso){
+  // Note: not all objects have NamespacePrefix; we still request it and tolerate missing.
+  // We attempt a minimal common set; if a field doesn't exist, SF will error and we'll log+skip.
+  const fields = [
+    "Id",
+    t.nameField,
+    "NamespacePrefix",
+    "LastModifiedDate",
+    "LastModifiedBy.Name",
+    "CreatedDate",
+    "CreatedBy.Name",
+  ];
+
+  let where = "";
+  if (modifiedAfterIso) {
+    // Tooling SOQL uses ISO datetime literal without quotes if using 2026-...Z? Safer: wrap in 2026-..Z in quotes.
+    where = ` WHERE LastModifiedDate >= ${modifiedAfterIso.includes("'") ? modifiedAfterIso : ("'" + modifiedAfterIso + "'")}`;
+  }
+
+  return `SELECT ${fields.join(", ")} FROM ${t.sobject}${where} ORDER BY LastModifiedDate DESC LIMIT ${limit}`;
 }
 
-function escapeHtml(s){
-  return String(s ?? "")
-    .replaceAll("&","&amp;")
-    .replaceAll("<","&lt;")
-    .replaceAll(">","&gt;")
-    .replaceAll('"',"&quot;")
-    .replaceAll("'","&#039;");
+function rowToModel(t, r){
+  const apiName = r[t.nameField] || r.Name || r.DeveloperName || r.FullName || r.Id;
+  return {
+    Type: t.typeLabel,
+    ApiName: apiName,
+    Namespace: r.NamespacePrefix || "",
+    LastModifiedDate: r.LastModifiedDate || "",
+    LastModifiedBy: r.LastModifiedBy?.Name || "",
+    CreatedDate: r.CreatedDate || "",
+    CreatedBy: r.CreatedBy?.Name || "",
+    Id: r.Id || "",
+    _raw: r,
+  };
 }
 
-function renderTable(rows){
-  const tbody = document.getElementById("invTbody");
+/* -------------------- Filtering / rendering -------------------- */
+
+function passesFilters(row){
+  const typeQ = normalizeText($("typeFilter")?.value || "");
+  const textQ = normalizeText($("textFilter")?.value || "");
+
+  if (typeQ && !normalizeText(row.Type).includes(typeQ)) return false;
+
+  if (textQ) {
+    const blob = normalizeText([
+      row.Type, row.ApiName, row.Namespace, row.LastModifiedBy, row.CreatedBy, row.Id
+    ].filter(Boolean).join(" "));
+    if (!blob.includes(textQ)) return false;
+  }
+
+  const modAfter = $("modifiedAfter")?.value || "";
+  if (modAfter) {
+    const after = new Date(modAfter + "T00:00:00Z");
+    const lm = row.LastModifiedDate ? new Date(row.LastModifiedDate) : null;
+    if (lm && lm < after) return false;
+  }
+
+  return true;
+}
+
+function render(){
+  const tbody = $("invTbody");
   if (!tbody) return;
 
-  if (!rows.length){
-    tbody.innerHTML = `<tr><td colspan="8" class="muted small">No results.</td></tr>`;
+  const rows = (invRows || []).filter(passesFilters);
+
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td class="muted small" colspan="8">No rows match the current filters.</td></tr>`;
     return;
   }
 
-  tbody.innerHTML = rows.map(r => `
-    <tr class="row">
-      <td>${escapeHtml(r.type)}</td>
-      <td class="mono">${escapeHtml(r.apiName)}</td>
-      <td class="mono">${escapeHtml(r.namespace || "—")}</td>
-      <td class="mono">${escapeHtml(fmtTime(r.lastModifiedDate))}</td>
-      <td>${escapeHtml(r.lastModifiedBy || "—")}</td>
-      <td class="mono">${escapeHtml(fmtTime(r.createdDate))}</td>
-      <td>${escapeHtml(r.createdBy || "—")}</td>
-      <td class="mono">${escapeHtml(r.id)}</td>
+  tbody.innerHTML = rows.map((r, idx) => `
+    <tr data-idx="${idx}">
+      <td>${r.Type || "—"}</td>
+      <td class="mono">${escapeHtml(r.ApiName || "—")}</td>
+      <td class="mono">${escapeHtml(r.Namespace || "—")}</td>
+      <td class="mono">${escapeHtml(r.LastModifiedDate || "—")}</td>
+      <td>${escapeHtml(r.LastModifiedBy || "—")}</td>
+      <td class="mono">${escapeHtml(r.CreatedDate || "—")}</td>
+      <td>${escapeHtml(r.CreatedBy || "—")}</td>
+      <td class="mono">${escapeHtml(r.Id || "—")}</td>
     </tr>
   `).join("\n");
 
-  // click to select (delegation)
-  tbody.querySelectorAll("tr").forEach((tr, idx) => {
+  tbody.querySelectorAll("tr[data-idx]").forEach(tr => {
     tr.addEventListener("click", () => {
-      const row = rows[idx];
-      Auth.setSelected(row);
+      const i = Number(tr.getAttribute("data-idx"));
+      const rec = rows[i];
+      if (!rec) return;
+      Auth.setSelected(rec);
     });
   });
 }
 
-async function runInventory(){
-  const token = Auth.loadToken();
-  if (!token?.access_token){
-    Auth.showBanner("Not logged in. Click Login.");
-    return;
-  }
-
-  invRows = [];
-  renderTable(invRows);
-  document.getElementById("downloadCsvBtn").disabled = true;
-
-  const perLimit = Number(document.getElementById("invLimit")?.value || 250);
-  const types = currentInventorySet();
-  const totalSteps = types.length;
-  let done = 0;
-
-  setBusy(true, "Scanning…");
-  setProgress(0, "Starting…");
-  Auth.showBanner("");
-
-  for (const t of types){
-    done += 1;
-    const pct = (done - 1) / totalSteps * 100;
-    setProgress(pct, `Querying ${t.key}…`);
-    setLastRequest(`tooling query ${t.key}`);
-
-    const soql = t.soql(perLimit);
-    const { ok, status, json } = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling:true });
-
-    if (!ok){
-      // If this type isn't queryable in the org, skip it but log the failure
-      Auth.log(`Inventory: ${t.key} failed (HTTP ${status}). Skipping. ${Auth.extractSfError(json)}`);
-      continue;
-    }
-
-    const recs = json?.records || [];
-    const nameField = t.nameField;
-
-    recs.forEach(r => {
-      invRows.push({
-        type: t.key,
-        apiName: r[nameField] || r.Name || r.DeveloperName || "(unknown)",
-        namespace: r.NamespacePrefix || "",
-        lastModifiedDate: r.LastModifiedDate,
-        lastModifiedBy: r.LastModifiedBy?.Name,
-        createdDate: r.CreatedDate,
-        createdBy: r.CreatedBy?.Name,
-        id: r.Id
-      });
-    });
-
-    // live render as we go
-    renderTable(invRows);
-    setProgress(done / totalSteps * 100, `Loaded ${t.key} (${recs.length})`);
-  }
-
-  // sort by lastModified desc
-  invRows.sort((a,b) => (b.lastModifiedDate || "").localeCompare(a.lastModifiedDate || ""));
-
-  renderTable(invRows);
-  setProgress(100, `Done (${invRows.length} rows)`);
-  setLastRun();
-  setBusy(false);
-
-  document.getElementById("downloadCsvBtn").disabled = invRows.length === 0;
-  Auth.log(`Inventory complete. Rows: ${invRows.length}`);
+function escapeHtml(s){
+  return String(s ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 }
+
+/* -------------------- CSV -------------------- */
 
 function downloadCsv(){
   if (!invRows.length) return;
 
-  const headers = ["type","apiName","namespace","lastModifiedDate","lastModifiedBy","createdDate","createdBy","id"];
+  const headers = ["Type","ApiName","Namespace","LastModifiedDate","LastModifiedBy","CreatedDate","CreatedBy","Id"];
   const lines = [headers.join(",")];
 
-  for (const r of invRows){
-    const row = headers.map(h => {
-      const v = (r[h] ?? "").toString();
-      const escaped = v.includes(",") || v.includes('"') || v.includes("\n")
-        ? `"${v.replaceAll('"','""')}"`
-        : v;
-      return escaped;
-    });
-    lines.push(row.join(","));
+  // Export filtered view (what user sees), not necessarily all.
+  const rows = invRows.filter(passesFilters);
+
+  for (const r of rows) {
+    const vals = [
+      r.Type, r.ApiName, r.Namespace, r.LastModifiedDate, r.LastModifiedBy, r.CreatedDate, r.CreatedBy, r.Id
+    ].map(v => `"${String(v ?? "").replace(/"/g,'""')}"`);
+    lines.push(vals.join(","));
   }
 
-  const blob = new Blob([lines.join("\n")], { type:"text/csv;charset=utf-8" });
+  const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `metadata-inventory_${new Date().toISOString().slice(0,19).replaceAll(":","-")}Z.csv`;
+  a.download = `metadata_inventory_v${Auth.getApiVersion()}_${new Date().toISOString().slice(0,10)}.csv`;
   a.click();
   URL.revokeObjectURL(url);
+
+  Auth.log(`CSV downloaded (${rows.length} rows).`);
 }
 
-/* ---------- Wiring ---------- */
-document.getElementById("loginBtn")?.addEventListener("click", Auth.login);
-document.getElementById("logoutBtn")?.addEventListener("click", Auth.logout);
-document.getElementById("runInventoryBtn")?.addEventListener("click", runInventory);
-document.getElementById("downloadCsvBtn")?.addEventListener("click", downloadCsv);
+/* -------------------- Inventory scan -------------------- */
 
-/* ---------- Init ---------- */
+async function runInventory(){
+  Auth.showBanner("");
+
+  const token = Auth.loadToken();
+  if (!token?.access_token) {
+    Auth.showBanner("Not logged in. Click Login.");
+    return;
+  }
+
+  const scope = $("invScope")?.value || "auto";
+  const limit = Number($("invLimit")?.value || 250);
+  const includeLarge = !!$("includeLargeTypes")?.checked;
+
+  const modifiedAfter = $("modifiedAfter")?.value || "";
+  const modifiedAfterIso = modifiedAfter ? new Date(modifiedAfter + "T00:00:00Z").toISOString() : null;
+
+  let targets = scopeTargets(scope);
+  if (includeLarge) targets = targets.concat(largeTargets());
+
+  // Optional type filter to reduce scan set early
+  const typeQ = normalizeText($("typeFilter")?.value || "");
+  if (typeQ) {
+    targets = targets.filter(t => normalizeText(t.typeLabel).includes(typeQ) || normalizeText(t.sobject).includes(typeQ));
+  }
+
+  if (!targets.length) {
+    Auth.log("No targets to scan (filters removed all).");
+    return;
+  }
+
+  setBusy(true, "Scanning…");
+  setProgress(0, `Starting (API v${Auth.getApiVersion()}) …`);
+  setLastRequest(`scan ${targets.length} types`);
+
+  invRows = [];
+  lastRawRows = [];
+
+  Auth.log(`Scan started (API v${Auth.getApiVersion()}) across ${targets.length} types.`);
+
+  for (let i=0; i<targets.length; i++){
+    const t = targets[i];
+    const pct = (i / targets.length) * 100;
+
+    setProgress(pct, `${t.typeLabel}…`);
+    setLastRequest(`${t.typeLabel} (limit ${limit})`);
+
+    const soql = buildSoql(t, limit, modifiedAfterIso);
+    const { ok, status, json } = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
+
+    if (!ok) {
+      const msg = Auth.extractSfError(json);
+      // If 401, stop immediately (token invalid)
+      if (status === 401) {
+        Auth.log(`Error 401 on ${t.typeLabel}. Token likely expired.`);
+        Auth.showBanner("Session expired/invalid (401). Click Login again.");
+        break;
+      }
+      Auth.log(`${t.typeLabel}: skipped (query failed): ${msg}`);
+      continue;
+    }
+
+    const recs = json?.records || [];
+    Auth.log(`${t.typeLabel}: ${recs.length} rows`);
+    for (const r of recs) {
+      try {
+        const model = rowToModel(t, r);
+        invRows.push(model);
+        lastRawRows.push({ t, r });
+      } catch (e) {
+        Auth.log(`${t.typeLabel}: row parse error: ${e?.message || e}`);
+      }
+    }
+  }
+
+  setProgress(100, "Complete.");
+  setBusy(false);
+  setLastRun();
+
+  Auth.log(`Scan complete. Total rows: ${invRows.length}`);
+  Auth.setSelected({ summary: { totalRows: invRows.length, apiVersion: Auth.getApiVersion() }, sample: invRows.slice(0, 5) });
+
+  const dl = $("downloadCsvBtn");
+  if (dl) dl.disabled = !invRows.length;
+
+  render();
+}
+
+/* -------------------- Wiring / init -------------------- */
+
+function debounce(fn, ms = 250){
+  let t = null;
+  return (...args) => {
+    clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
+$("runInventoryBtn")?.addEventListener("click", runInventory);
+$("downloadCsvBtn")?.addEventListener("click", downloadCsv);
+
+$("typeFilter")?.addEventListener("input", debounce(render, 150));
+$("textFilter")?.addEventListener("input", debounce(render, 150));
+$("modifiedAfter")?.addEventListener("change", debounce(render, 0));
+$("invScope")?.addEventListener("change", () => Auth.log(`Scope set: ${$("invScope").value}`));
+$("invLimit")?.addEventListener("change", () => Auth.log(`Per-type limit set: ${$("invLimit").value}`));
+$("includeLargeTypes")?.addEventListener("change", () => Auth.log(`include large types: ${$("includeLargeTypes").checked}`));
+
+$("loginBtn")?.addEventListener("click", Auth.login);
+$("logoutBtn")?.addEventListener("click", Auth.logout);
+
 (async function init(){
+  Auth.wireErrorUI();
   Auth.wireApiVersionSelect();
+
   Auth.setText("buildPill", BUILD);
   Auth.setText("apiPill", `v${Auth.getApiVersion()}`);
+  Auth.showBanner("");
+
+  setProgress(0, "Idle");
+  setBusy(false);
 
   await Auth.handleRedirectIfPresent();
 
   const token = Auth.loadToken();
-  if (token?.access_token){
-    Auth.setText("orgPill", token.instance_url || "Connected");
+  if (token?.access_token) {
+    await Auth.ensureOrgContext();
+    Auth.renderOrgContext();
+    Auth.renderErrors();
+    Auth.renderOrgDetails();
     Auth.log("Session restored.");
   } else {
     Auth.setText("orgPill", "Not connected");
     Auth.log("Not logged in.");
   }
 
-  setProgress(0, "Idle");
+  render();
 })();
