@@ -1,207 +1,78 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>SFDC Deployment Tracker (Web)</title>
-  <meta name="color-scheme" content="dark light" />
-  <link rel="stylesheet" href="styles.css" />
-</head>
+SFDC Deployment Tracker (Web)
+Org URL: Not connected
+Instance: —
+Org Id: —
+User: —
+API: —
+API max: —
+Build: —
+          v65.0
+          v64.0
+          v63.0
+          v62.0
+          v61.0
+         Login Org details Errors: 0 Logout Refresh Metadata inventory Workbench tester
 
-<body>
-  <div class="app">
-    <div class="topbar">
-      <div class="title">
-        <h1>SFDC Deployment Tracker (Web)</h1>
-        <div class="pills">
-          <div class="pill" title="Salesforce instance your token is bound to">
-            Org: <code id="orgPill">Not connected</code>
-          </div>
-          <div class="pill" title="REST/Tooling API version used for calls">
-            API: <code id="apiPill">—</code>
-          </div>
-          <div class="pill" title="Build/version of this page (useful for cache debugging)">
-            Build: <code id="buildPill">—</code>
-          </div>
-        </div>
-      </div>
+Deployments
+Apex tests
+Packages
+Enable alerts Export CSV Auto-refresh
+        Off
+        10s
+        30s
+        60s
+       Show
+        All
+        Active
+        Failed
+        Validations (checkOnly)
+        Real deploys
+       Limit
+        10
+        20
+        50
+        100
+       From To
+Active: —
+Results (Deployments)
+Last refreshed: — Last request: —
+Duration trend
+Uses completed deployments in the current result set.
 
-      <div class="actions">
-        <select id="apiVersionSelect" title="Choose REST/Tooling API version"></select>
-        <button id="loginBtn" title="Start OAuth login flow">Login</button>
-        <button id="logoutBtn" title="Clears token">Logout</button>
-        <button id="refreshBtn" title="Refresh the active tab data now">Refresh</button>
-        <a class="tab" href="inventory.html" title="Metadata inventory (Tooling-based)">Metadata Inventory</a>
-      </div>
-    </div>
+Status
+User
+Type
+Created
+Started
+Completed
+Queue time
+Run time
+Total time
+Tests
+Test fails
+Test time
+Id
+Actions
+Not loaded.
+Details / Insights / Log
+Idle
+Selected
+Nothing selected.
+Deployment details (row-click)
+Select a deployment row to load details.
+Bottleneck insights
+—
+Test heatmap (slowest Apex classes)
 
-    <div id="authBanner" class="banner"></div>
-
-    <div class="tabs">
-      <div class="tab active" id="tabDeployments">Deployments</div>
-      <div class="tab" id="tabApexTests">Apex tests</div>
-      <div class="tab" id="tabPackages">Packages</div>
-    </div>
-
-    <!-- Controls: Deployments -->
-    <div class="controls" id="deploymentsControls">
-      <span class="label">Auto-refresh</span>
-      <select id="pollInterval" title="How often to auto-refresh deployments. 0 disables polling.">
-        <option value="0">Off</option>
-        <option value="10">10s</option>
-        <option value="30" selected>30s</option>
-        <option value="60">60s</option>
-      </select>
-
-      <span class="label">Show</span>
-      <select id="deployFilter" title="Filter deployments by status or checkOnly">
-        <option value="all" selected>All</option>
-        <option value="active">Active</option>
-        <option value="failed">Failed</option>
-        <option value="checkonly">Validations (checkOnly)</option>
-        <option value="real">Real deploys</option>
-      </select>
-
-      <span class="label">Limit</span>
-      <select id="deployLimit" title="How many DeployRequest rows to query from Salesforce">
-        <option>10</option>
-        <option selected>20</option>
-        <option>50</option>
-        <option>100</option>
-      </select>
-
-      <input id="deploySearch" placeholder="Search status/type/user/id/error…" style="min-width: 320px;" />
-    </div>
-
-    <!-- Controls: Apex Tests -->
-    <div class="controls" id="apexTestsControls" style="display:none;">
-      <span class="label">Limit</span>
-      <select id="testLimit">
-        <option>10</option>
-        <option selected>20</option>
-        <option>50</option>
-        <option>100</option>
-      </select>
-
-      <span class="label">Show</span>
-      <select id="testFilter">
-        <option value="all" selected>All</option>
-        <option value="failed">Failed only</option>
-        <option value="passed">Passed only</option>
-      </select>
-
-      <input id="testSearch" placeholder="Search user/status/run id…" style="min-width: 320px;" />
-      <button id="refreshTestsBtn">Refresh tests</button>
-    </div>
-
-    <!-- Controls: Packages -->
-    <div class="controls" id="packagesControls" style="display:none;">
-      <input id="pkgSearch" placeholder="Search package name/namespace…" style="min-width: 320px;" />
-      <button id="refreshPackagesBtn">Refresh packages</button>
-    </div>
-
-    <div class="layout">
-      <div class="card">
-        <div class="cardHeader">
-          <div class="h" id="resultsTitle">Results</div>
-          <div class="meta">
-            <span id="lastRefreshed" class="muted">Last refreshed: —</span>
-            <span id="lastRequest" class="muted">Last request: —</span>
-          </div>
-        </div>
-
-        <div class="cardBody" style="padding:0;">
-          <!-- Deployments -->
-          <div id="deploymentsTableWrap">
-            <div style="max-height: 720px; overflow:auto;">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Status</th>
-                    <th>User</th>
-                    <th>Type</th>
-                    <th>Created</th>
-                    <th>Started</th>
-                    <th>Completed</th>
-                    <th>Queue</th>
-                    <th>Run</th>
-                    <th>Total</th>
-                    <th>Tests</th>
-                    <th>Test fails</th>
-                    <th>Test time</th>
-                    <th>Id</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="deploymentsTbody">
-                  <tr><td colspan="14" class="muted small">Not loaded.</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <!-- Tests -->
-          <div id="testsTableWrap" style="display:none;">
-            <div style="max-height: 720px; overflow:auto;">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Outcome</th>
-                    <th>User</th>
-                    <th>Started</th>
-                    <th>Ended</th>
-                    <th>Duration</th>
-                    <th>Tests</th>
-                    <th>Failures</th>
-                    <th>Run Id</th>
-                    <th>Actions</th>
-                  </tr>
-                </thead>
-                <tbody id="testsTbody">
-                  <tr><td colspan="9" class="muted small">Not loaded.</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <!-- Packages -->
-          <div id="packagesTableWrap" style="display:none;">
-            <div style="max-height: 720px; overflow:auto;">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Package</th>
-                    <th>Namespace</th>
-                    <th>Version</th>
-                  </tr>
-                </thead>
-                <tbody id="packagesTbody">
-                  <tr><td colspan="3" class="muted small">Not loaded.</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="cardHeader">
-          <div class="h">Selected / Log</div>
-          <div class="meta">
-            <span id="busyPill" class="badge">Idle</span>
-          </div>
-        </div>
-        <div class="cardBody">
-          <pre id="selectedPre" class="rightPre" style="min-height: 140px;">Nothing selected.</pre>
-          <div style="height:10px;"></div>
-          <pre id="logPre" class="rightPre">Ready.</pre>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <script src="auth.js"></script>
-  <script src="app.js"></script>
-</body>
-</html>
+Aggregated from ApexTestResult runtimes for the correlated test run (if found). Flags tests ≥ 8000ms as CPU timeout risk.
+Side-by-side compare
+Compare
+Enter two IDs then click Compare.
+Log
+Ready.
+Org details
+Refresh Close
+Loading…
+Errors
+Clear Close
+No errors.
