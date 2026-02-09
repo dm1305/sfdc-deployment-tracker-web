@@ -1,4 +1,3 @@
-<!-- inventory.html (FULL FILE) -->
 <!doctype html>
 <html lang="en">
 <head>
@@ -47,7 +46,7 @@
         <button id="downloadCsvBtn" disabled>Download CSV</button>
 
         <span class="label">Per-type limit</span>
-        <select id="invLimit" title="Max rows per type (large orgs can be slow)">
+        <select id="invLimit">
           <option value="100">100</option>
           <option value="250" selected>250</option>
           <option value="500">500</option>
@@ -57,9 +56,9 @@
         <input id="textFilter" placeholder="Search in results (type/name/user/id) …" style="min-width:320px;" />
 
         <span class="label">Changed between</span>
-        <input id="changedFrom" type="date" title="LastModifiedDate >= this date (UTC)" />
+        <input id="changedFrom" type="date" />
         <span class="muted small">and</span>
-        <input id="changedTo" type="date" title="LastModifiedDate <= this date (UTC)" />
+        <input id="changedTo" type="date" />
 
         <label class="muted small" style="display:flex;gap:8px;align-items:center;">
           <input type="checkbox" id="includeLargeTypes" checked />
@@ -68,52 +67,41 @@
       </div>
 
       <div style="display:flex; gap:14px; flex-wrap:wrap; width:100%; margin-top:10px;">
-        <!-- Type checkbox panel -->
         <div class="card" style="flex: 1 1 520px; min-width: 360px;">
           <div class="cardHeader">
             <div class="h">Metadata types (Tooling objects)</div>
             <div class="meta">
-              <span class="muted small" id="typeCountLabel">Loading types…</span>
+              <span id="typeCountLabel">Loading types…</span>
             </div>
           </div>
           <div class="cardBody">
             <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
-              <button id="selectAllTypesBtn" class="btnSmall">Select all</button>
-              <button id="selectNoTypesBtn" class="btnSmall">Select none</button>
-              <button id="selectRecommendedBtn" class="btnSmall" title="A practical subset (code/config) for faster scans">Recommended</button>
-              <input id="typeSearch" placeholder="Filter type list…" style="min-width:240px;" />
+              <button id="selectAllTypesBtn">Select all</button>
+              <button id="selectNoTypesBtn">Select none</button>
+              <button id="selectRecommendedBtn">Recommended</button>
+              <input id="typeSearch" placeholder="Filter type list…" />
             </div>
 
-            <div id="typeCheckboxWrap" style="max-height:260px; overflow:auto; border:1px solid rgba(255,255,255,.10); border-radius:12px; padding:10px;">
-              <div class="muted small">Loading…</div>
-            </div>
-
-            <div class="hint" style="margin-top:10px;">
-              Default is “all types selected”. If you need speed, use “Recommended” or uncheck heavy types.
-              “Changed between” applies to <span class="mono">LastModifiedDate</span> where available.
+            <div id="typeCheckboxWrap">
+              <div>Loading…</div>
             </div>
           </div>
         </div>
 
-        <!-- Progress -->
         <div class="card" style="flex: 1 1 360px; min-width: 320px;">
           <div class="cardHeader">
             <div class="h">Progress</div>
             <div class="meta">
-              <span class="badge" id="busyPill">Idle</span>
+              <span id="busyPill">Idle</span>
             </div>
           </div>
           <div class="cardBody">
-            <div class="muted small" id="lastRefreshed">Last run: —</div>
-            <div class="muted small" id="lastRequest">Last request: —</div>
-            <div style="height:10px;"></div>
-            <progress id="invProgress" value="0" max="100" style="width:100%;"></progress>
-            <div style="display:flex; justify-content:space-between; gap:10px; margin-top:6px;">
-              <div class="muted small" id="progressLabel">Idle</div>
-              <div class="muted small" id="progressPct">0%</div>
-            </div>
-            <div style="height:10px;"></div>
-            <pre id="logPre" class="rightPre" style="min-height:200px;">Ready.</pre>
+            <div id="lastRefreshed">Last run: —</div>
+            <div id="lastRequest">Last request: —</div>
+            <progress id="invProgress" value="0" max="100"></progress>
+            <div id="progressLabel">Idle</div>
+            <div id="progressPct">0%</div>
+            <pre id="logPre">Ready.</pre>
           </div>
         </div>
       </div>
@@ -125,62 +113,49 @@
         <div class="cardHeader">
           <div class="h">Results</div>
           <div class="meta">
-            <span class="muted small" id="resultsCountLabel">0 rows</span>
+            <span id="resultsCountLabel">0 rows</span>
           </div>
         </div>
-        <div class="cardBody" style="padding:0;">
-          <div style="max-height:720px; overflow:auto;">
-            <table>
-              <thead>
-                <tr>
-                  <th>Type</th>
-                  <th>API name</th>
-                  <th>Namespace</th>
-                  <th>Last modified</th>
-                  <th>Modified by</th>
-                  <th>Created</th>
-                  <th>Created by</th>
-                  <th>Id</th>
-                </tr>
-              </thead>
-              <tbody id="invTbody">
-                <tr><td colspan="8" class="muted small">Not loaded.</td></tr>
-              </tbody>
-            </table>
-          </div>
+        <div class="cardBody">
+          <table>
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>API name</th>
+                <th>Namespace</th>
+                <th>Last modified</th>
+                <th>Modified by</th>
+                <th>Created</th>
+                <th>Created by</th>
+                <th>Id</th>
+              </tr>
+            </thead>
+            <tbody id="invTbody">
+              <tr><td colspan="8">Not loaded.</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
       <div class="card">
         <div class="cardHeader">
           <div class="h">Selected</div>
-          <div class="meta"></div>
         </div>
         <div class="cardBody">
-          <pre id="selectedPre" class="rightPre" style="min-height: 360px;">Nothing selected.</pre>
+          <pre id="selectedPre">Nothing selected.</pre>
         </div>
       </div>
     </div>
 
-    <!-- DRAWERS -->
     <div id="orgDetailsDrawer" class="drawer">
-      <h3>Org details</h3>
-      <pre id="orgDetailsPre">Loading…</pre>
-      <div class="row">
-        <a id="trustSearchLink" target="_blank">Trust (search)</a>
-        <a id="trustInstanceLink" target="_blank">Trust (instance)</a>
-        <button id="refreshOrgDetailsBtn">Refresh</button>
-        <button class="closeDrawer">Close</button>
-      </div>
+      <pre id="orgDetailsPre"></pre>
+      <button class="closeDrawer">Close</button>
     </div>
 
     <div id="errorsDrawer" class="drawer">
-      <h3>Errors</h3>
-      <pre id="errorsPre">No errors.</pre>
-      <div class="row">
-        <button id="clearErrorsBtn">Clear</button>
-        <button class="closeDrawer">Close</button>
-      </div>
+      <pre id="errorsPre"></pre>
+      <button id="clearErrorsBtn">Clear</button>
+      <button class="closeDrawer">Close</button>
     </div>
 
   </div>
