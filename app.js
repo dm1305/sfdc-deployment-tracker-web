@@ -1,5 +1,5 @@
 // app.js (FULL FILE - UPDATED)
-// v2026-02-09.7
+// v2026-02-09.9
 // Fixes:
 // - Prevents redeclaration errors if the script is loaded twice (guard + IIFE)
 // - Ensures UI shows a clear message when not logged in.
