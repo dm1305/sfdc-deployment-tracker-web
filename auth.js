@@ -1,405 +1,348 @@
-// auth.js (FULL FILE - UPDATED)
-// Fixes:
-// - Wires login/logout/refresh/clear/org/errors buttons on DOM ready (so buttons always work)
-// - Hides Login when logged in; hides Logout when logged out
-// - Keeps top pills in sync
-// - Keeps existing PKCE flow + sfFetch helpers (minimal but solid)
+// app.js (FULL FILE - UPDATED)
+// Changes:
+// - Removes any From/To date filter usage (since UI removed)
+// - Ensures Refresh button works even if token absent (shows banner)
+// - Uses Auth wiring; keeps existing features.
 
-window.Auth = (function () {
-  // ====== CONFIG (edit these) ======
-  const CLIENT_ID = "3MVG9YFqzc_KnL.wada6.pbgp4zDPc8T6u6uR6srOVo1fS7XOD_kHsrDH_QurZzXeEgwzWBU365_xXQ54mMNn";
-  const LOGIN_DOMAIN = "https://gearsetcom-4bf-dev-ed.develop.my.salesforce.com";
-  // =================================
+let trendChart = null;
+let heatmapChart = null;
+let pollTimer = null;
+let inFlight = false;
 
-  const BUILD = "2026-02-09.4";
-  const TOKEN_KEY = "sf_token";
+let lastDeployments = [];
+let lastTestRuns = [];
+let deployToTest = new Map();
 
-  // Default API version; can be changed via selector
-  let API_VERSION = "65.0";
+function $(id) { return document.getElementById(id); }
 
-  // Error store
-  const errors = [];
+function setText(id, text) { const el = $(id); if (el) el.textContent = text; }
 
-  function $(id) { return document.getElementById(id); }
-  function setText(id, t) { const el = $(id); if (el) el.textContent = t; }
-  function show(el, on) { if (!el) return; el.style.display = on ? "" : "none"; }
+function log(msg) {
+  const el = $("logPre");
+  if (!el) return;
+  const stamp = new Date().toISOString();
+  el.textContent = `[${stamp}] ${msg}\n` + el.textContent;
+}
 
-  function showBanner(msg) {
-    const b = $("authBanner");
-    if (!b) return;
-    b.textContent = msg || "";
-    b.style.display = msg ? "block" : "none";
+function setSelected(objOrText) {
+  const el = $("selectedPre");
+  if (!el) return;
+  el.textContent = typeof objOrText === "string" ? objOrText : JSON.stringify(objOrText, null, 2);
+}
+
+function setBusy(on, label = null) {
+  inFlight = on;
+  const pill = $("busyPill");
+  if (pill) pill.textContent = on ? (label || "Working…") : "Idle";
+
+  ["refreshBtn", "exportCsvBtn"].forEach((id) => {
+    const b = $(id);
+    if (b) b.disabled = !!on;
+  });
+}
+
+function parseDate(s) {
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+function fmtTime(d) {
+  if (!d) return "—";
+  return d.toISOString().replace("T", " ").replace("Z", "Z");
+}
+
+function fmtDuration(ms) {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
+  const sec = Math.floor(ms / 1000);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return `${h}h ${m}m ${s}s`;
+}
+
+function statusClass(status) {
+  const s = String(status || "").toLowerCase();
+  if (["succeeded", "success", "completed"].some((k) => s.includes(k))) return "good";
+  if (["failed", "error"].some((k) => s.includes(k))) return "bad";
+  if (["inprogress", "queued", "pending", "validat", "running", "processing"].some((k) => s.includes(k))) return "warn";
+  return "";
+}
+
+function passesDeployFilter(r) {
+  const filter = $("deployFilter")?.value || "all";
+  const status = String(r.Status || "");
+  const checkOnly = !!r.CheckOnly;
+
+  if (filter === "active") {
+    const active = ["InProgress", "Pending", "Queued", "Processing", "Running", "Validating"];
+    return active.includes(status);
+  }
+  if (filter === "failed") return status.toLowerCase().includes("fail") || status.toLowerCase().includes("error");
+  if (filter === "checkonly") return checkOnly;
+  if (filter === "real") return !checkOnly;
+  return true;
+}
+
+function passesDeploySearch(r) {
+  const q = ($("deploySearch")?.value || "").trim().toLowerCase();
+  if (!q) return true;
+  const blob = [r.Status, r.Type, r.CreatedBy?.Name, r.ErrorStatusCode, r.ErrorMessage, r.Id].filter(Boolean).join(" ").toLowerCase();
+  return blob.includes(q);
+}
+
+function correlationBadge(c) {
+  if (!c) return `<span class="badge muted">Unknown</span>`;
+  const conf = c.confidence || "Low";
+  const out = c.outcome || "Unknown";
+  const cls = /fail/i.test(out) ? "bad" : /pass|succeed/i.test(out) ? "good" : "warn";
+  return `<span class="badge"><span class="status ${cls}">${out}</span><span class="muted">(${conf})</span></span>`;
+}
+
+function renderDeploymentsTable(rows) {
+  const tbody = $("deploymentsTbody");
+  if (!tbody) return;
+
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td class="muted small" colspan="14">No deployments match the current filter/search.</td></tr>`;
+    return;
   }
 
-  function loadToken() {
-    const raw = localStorage.getItem(TOKEN_KEY);
-    return raw ? JSON.parse(raw) : null;
-  }
+  tbody.innerHTML = rows.map((r) => {
+    const now = new Date();
+    const created = parseDate(r.CreatedDate);
+    const started = parseDate(r.StartDate) || created;
+    const completed = parseDate(r.CompletedDate);
 
-  function saveToken(t) { localStorage.setItem(TOKEN_KEY, JSON.stringify(t)); }
-  function clearToken() { localStorage.removeItem(TOKEN_KEY); }
+    const queueMs = created && started ? started - created : null;
+    const runMs = started ? (completed ? completed - started : now - started) : null;
+    const totalMs = created ? (completed ? completed - created : now - created) : null;
 
-  function getRedirectUri() {
-    return window.location.origin + window.location.pathname;
-  }
+    const st = r.Status || "—";
+    const stClass = statusClass(st);
 
-  function base64UrlEncode(bytes) {
-    let bin = "";
-    bytes.forEach((b) => (bin += String.fromCharCode(b)));
-    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
-  }
+    const type = r.Type || "—";
+    const user = r.CreatedBy?.Name || "—";
 
-  async function sha256Base64Url(text) {
-    const data = new TextEncoder().encode(text);
-    const digest = await crypto.subtle.digest("SHA-256", data);
-    return base64UrlEncode(new Uint8Array(digest));
-  }
+    const corr = deployToTest.get(r.Id) || null;
+    const testFails = corr?.failures ?? null;
+    const testMs = corr?.durationMs ?? null;
 
-  function randomString(length = 64) {
-    const bytes = new Uint8Array(length);
-    crypto.getRandomValues(bytes);
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
-    return Array.from(bytes, (b) => chars[b % chars.length]).join("");
-  }
+    return `
+      <tr data-id="${r.Id}">
+        <td class="status ${stClass}">${st}</td>
+        <td>${user}</td>
+        <td>${type}${r.CheckOnly ? ' <span class="muted">(checkOnly)</span>' : ""}</td>
+        <td class="mono">${fmtTime(created)}</td>
+        <td class="mono">${fmtTime(parseDate(r.StartDate))}</td>
+        <td class="mono">${fmtTime(completed)}</td>
+        <td class="mono">${fmtDuration(queueMs)}</td>
+        <td class="mono">${fmtDuration(runMs)}</td>
+        <td class="mono">${fmtDuration(totalMs)}</td>
+        <td>${correlationBadge(corr)}</td>
+        <td class="mono">${testFails ?? "—"}</td>
+        <td class="mono">${testMs != null ? fmtDuration(testMs) : "—"}</td>
+        <td class="mono">${r.Id}</td>
+        <td>
+          <div class="rowActions">
+            <button class="btnSmall" data-action="details" data-id="${r.Id}">Details</button>
+            <button class="btnSmall" data-action="copy" data-text="${r.Id}">Copy id</button>
+          </div>
+        </td>
+      </tr>
+    `.trim();
+  }).join("\n");
 
-  function setAuthUi() {
-    const token = loadToken();
-    const loggedIn = !!(token?.access_token && token?.instance_url);
-
-    // Hide/show buttons
-    show($("loginBtn"), !loggedIn);
-    show($("logoutBtn"), loggedIn);
-
-    // Pills
-    setText("buildPill", BUILD);
-    setText("apiPill", `v${API_VERSION}`);
-
-    if (!loggedIn) {
-      setText("orgPill", "Not connected");
-      setText("instancePill", "—");
-      setText("orgIdPill", "—");
-      setText("userPill", "—");
-      setText("apiMaxPill", "—");
-    } else {
-      setText("orgPill", token.instance_url || "Connected");
-    }
-  }
-
-  function reportError(e) {
-    const entry = {
-      ts: new Date().toISOString(),
-      scope: e?.scope || "unknown",
-      message: e?.message || String(e),
-      status: e?.status ?? null,
-      request: e?.request ?? null,
-      detail: e?.detail ?? null,
-      json: e?.json ?? null,
-    };
-    errors.unshift(entry);
-    setText("errorCount", String(errors.length));
-    const pre = $("errorsPre");
-    if (pre) pre.textContent = JSON.stringify(errors.slice(0, 50), null, 2);
-  }
-
-  function clearErrors() {
-    errors.length = 0;
-    setText("errorCount", "0");
-    const pre = $("errorsPre");
-    if (pre) pre.textContent = "No errors.";
-  }
-
-  function setLastRequest(text) {
-    setText("lastRequest", `Last request: ${text}`);
-  }
-
-  function getApiVersion() { return API_VERSION; }
-
-  function wireApiVersionSelect() {
-    const sel = $("apiVersionSelect");
-    if (!sel) return;
-
-    // Populate a sane set (you can expand)
-    const versions = ["65.0", "64.0", "63.0", "62.0", "61.0"];
-    sel.innerHTML = versions.map(v => `<option value="${v}">v${v}</option>`).join("");
-    sel.value = API_VERSION;
-
-    sel.addEventListener("change", () => {
-      API_VERSION = sel.value || "65.0";
-      setText("apiPill", `v${API_VERSION}`);
+  // Row click loads details
+  tbody.querySelectorAll("tr[data-id]").forEach((tr) => {
+    tr.addEventListener("click", async (e) => {
+      const isButton = (e.target && e.target.tagName === "BUTTON");
+      if (isButton) return;
+      const id = tr.getAttribute("data-id");
+      if (id) await loadDeployDetails(id);
     });
-  }
+  });
 
-  async function login() {
-    if (!CLIENT_ID) {
-      alert("Missing CLIENT_ID in auth.js");
-      return;
-    }
+  // Buttons
+  tbody.querySelectorAll("button[data-action]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const action = btn.getAttribute("data-action");
+      const id = btn.getAttribute("data-id");
+      const text = btn.getAttribute("data-text");
 
-    const redirectUri = getRedirectUri();
-    const codeVerifier = randomString(96);
-    const codeChallenge = await sha256Base64Url(codeVerifier);
-    sessionStorage.setItem("pkce_verifier", codeVerifier);
+      if (action === "details" && id) return loadDeployDetails(id);
 
-    const state = randomString(24);
-    sessionStorage.setItem("oauth_state", state);
-
-    const authUrl = new URL(`${LOGIN_DOMAIN}/services/oauth2/authorize`);
-    authUrl.searchParams.set("response_type", "code");
-    authUrl.searchParams.set("client_id", CLIENT_ID);
-    authUrl.searchParams.set("redirect_uri", redirectUri);
-    authUrl.searchParams.set("scope", "refresh_token full");
-    authUrl.searchParams.set("state", state);
-    authUrl.searchParams.set("code_challenge", codeChallenge);
-    authUrl.searchParams.set("code_challenge_method", "S256");
-
-    window.location.href = authUrl.toString();
-  }
-
-  async function handleRedirectIfPresent() {
-    const url = new URL(window.location.href);
-    const code = url.searchParams.get("code");
-    const state = url.searchParams.get("state");
-    const error = url.searchParams.get("error");
-    const errorDesc = url.searchParams.get("error_description");
-
-    if (error) {
-      showBanner(`OAuth error: ${error}${errorDesc ? " - " + errorDesc : ""}`);
-      reportError({ scope: "oauth", message: "OAuth error", detail: `${error} ${errorDesc || ""}` });
-      return;
-    }
-    if (!code) return;
-
-    const expected = sessionStorage.getItem("oauth_state");
-    if (!expected || state !== expected) {
-      showBanner("State mismatch. Aborting.");
-      reportError({ scope: "oauth", message: "State mismatch" });
-      return;
-    }
-
-    const verifier = sessionStorage.getItem("pkce_verifier");
-    if (!verifier) {
-      showBanner("Missing PKCE verifier. Aborting.");
-      reportError({ scope: "oauth", message: "Missing PKCE verifier" });
-      return;
-    }
-
-    // Clean URL
-    url.searchParams.delete("code");
-    url.searchParams.delete("state");
-    window.history.replaceState({}, document.title, url.toString());
-
-    const tokenUrl = `${LOGIN_DOMAIN}/services/oauth2/token`;
-    const body = new URLSearchParams();
-    body.set("grant_type", "authorization_code");
-    body.set("client_id", CLIENT_ID);
-    body.set("redirect_uri", getRedirectUri());
-    body.set("code", code);
-    body.set("code_verifier", verifier);
-
-    const resp = await fetch(tokenUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-    });
-
-    const json = await resp.json().catch(() => null);
-
-    if (!resp.ok) {
-      const msg = json?.error_description || json?.error || `HTTP ${resp.status}`;
-      showBanner(`Token error: ${msg}`);
-      reportError({ scope: "oauth", message: "Token exchange failed", status: resp.status, json });
-      return;
-    }
-
-    saveToken(json);
-    sessionStorage.removeItem("pkce_verifier");
-    sessionStorage.removeItem("oauth_state");
-    showBanner("");
-    setAuthUi();
-
-    // Hydrate org context best-effort (optional)
-    try { await loadOrgContext(true); } catch {}
-  }
-
-  async function logout() {
-    clearToken();
-    sessionStorage.removeItem("pkce_verifier");
-    sessionStorage.removeItem("oauth_state");
-    showBanner("");
-    setAuthUi();
-  }
-
-  function extractSfError(json) {
-    if (!json) return "Unknown error";
-    if (Array.isArray(json) && json[0]?.message) return json[0].message;
-    if (json?.message) return json.message;
-    if (json?.error_description) return json.error_description;
-    if (json?.error) return json.error;
-    return JSON.stringify(json);
-  }
-
-  function isSessionInvalid(sfJson) {
-    const msg = (sfJson?.[0]?.errorCode || sfJson?.error || sfJson?.message || "").toString();
-    return /INVALID_SESSION_ID|invalid_grant|expired|session/i.test(msg);
-  }
-
-  async function sfFetch(path, { tooling = false, method = "GET", headers = {}, body = null } = {}) {
-    const token = loadToken();
-    if (!token?.access_token || !token?.instance_url) {
-      showBanner("Not logged in. Click Login.");
-      return { ok: false, status: 0, json: null };
-    }
-
-    const base = tooling
-      ? `${token.instance_url}/services/data/v${API_VERSION}/tooling`
-      : `${token.instance_url}/services/data/v${API_VERSION}`;
-    const url = `${base}${path}`;
-
-    setLastRequest(`${tooling ? "tooling" : "rest"} ${method} ${path}`);
-
-    try {
-      const resp = await fetch(url, {
-        method,
-        headers: {
-          Authorization: `Bearer ${token.access_token}`,
-          ...headers,
-        },
-        body,
-      });
-
-      const json = await resp.json().catch(() => null);
-
-      if (!resp.ok) {
-        const msg = extractSfError(json);
-        if (resp.status === 401 || isSessionInvalid(json)) {
-          showBanner(`Session expired/invalid. Click Login again. (HTTP ${resp.status})`);
-        }
-        reportError({ scope: "sfFetch", message: msg, status: resp.status, request: `${method} ${path}`, json });
+      if (action === "copy") {
+        try { await navigator.clipboard.writeText(text || ""); log("Copied to clipboard."); }
+        catch { log("Clipboard copy failed."); }
       }
-
-      return { ok: resp.ok, status: resp.status, json };
-    } catch (e) {
-      reportError({ scope: "sfFetch", message: "Network/Fetch error", detail: e?.message || String(e), request: `${method} ${path}` });
-      return { ok: false, status: 0, json: null };
-    }
-  }
-
-  // Org context (best effort)
-  async function loadOrgContext(force = false) {
-    const token = loadToken();
-    if (!token?.access_token || !token?.instance_url) return;
-
-    // OAuth identity gives org/user ids reliably
-    if (token.id) {
-      const resp = await fetch(token.id, { headers: { Authorization: `Bearer ${token.access_token}` } });
-      const idJson = await resp.json().catch(() => null);
-      if (idJson?.organization_id) setText("orgIdPill", idJson.organization_id);
-      if (idJson?.username) setText("userPill", idJson.username);
-    }
-
-    // InstanceName (e.g. NAxx)
-    const q = "SELECT InstanceName, IsSandbox FROM Organization LIMIT 1";
-    const r = await sfFetch(`/query?q=${encodeURIComponent(q)}`, { tooling: false });
-    if (r.ok) {
-      const rec = r.json?.records?.[0];
-      if (rec?.InstanceName) setText("instancePill", rec.InstanceName);
-    }
-
-    // API max from /services/data
-    const vd = await fetch(`${token.instance_url}/services/data`, {
-      headers: { Authorization: `Bearer ${token.access_token}` }
-    }).then(r => r.json()).catch(() => null);
-
-    if (Array.isArray(vd) && vd.length) {
-      const max = vd.map(x => parseFloat(x.version)).filter(Number.isFinite).sort((a,b)=>b-a)[0];
-      if (max) setText("apiMaxPill", `v${max.toFixed(1)}`);
-    }
-
-    // Trust links
-    const myDomain = (token.instance_url || "").replace(/^https?:\/\//, "");
-    const trustSearch = `https://status.salesforce.com/search?fromSearch=true&search=${encodeURIComponent(myDomain)}`;
-    const trustA = $("trustSearchLink");
-    if (trustA) trustA.href = trustSearch;
-
-    const inst = $("instancePill")?.textContent || "";
-    const instLink = $("trustInstanceLink");
-    if (instLink) {
-      if (inst && inst !== "—") {
-        instLink.href = `https://status.salesforce.com/instances/${encodeURIComponent(inst)}`;
-        instLink.style.display = "";
-      } else {
-        instLink.style.display = "none";
-      }
-    }
-
-    // Org details drawer body (optional)
-    const pre = $("orgDetailsPre");
-    if (pre) {
-      pre.textContent = JSON.stringify({
-        instance_url: token.instance_url,
-        apiVersion: API_VERSION,
-        orgId: $("orgIdPill")?.textContent,
-        user: $("userPill")?.textContent,
-        instanceName: $("instancePill")?.textContent,
-        trustSearch,
-      }, null, 2);
-    }
-  }
-
-  function toggleDrawer(drawerId, on) {
-    const d = $(drawerId);
-    if (!d) return;
-    d.style.display = on ? "block" : "none";
-  }
-
-  function wireChrome() {
-    // Always wire API selector
-    wireApiVersionSelect();
-
-    // Always wire auth buttons
-    $("loginBtn")?.addEventListener("click", (e) => { e.preventDefault(); login(); });
-    $("logoutBtn")?.addEventListener("click", (e) => { e.preventDefault(); logout(); });
-
-    // Drawer wiring
-    $("orgDetailsBtn")?.addEventListener("click", async () => {
-      toggleDrawer("orgDetailsDrawer", true);
-      try { await loadOrgContext(true); } catch {}
     });
-    $("errorsBtn")?.addEventListener("click", () => toggleDrawer("errorsDrawer", true));
-    $("refreshOrgDetailsBtn")?.addEventListener("click", async () => { await loadOrgContext(true); });
-    $("clearErrorsBtn")?.addEventListener("click", clearErrors);
-    document.querySelectorAll(".closeDrawer").forEach((b) => b.addEventListener("click", () => {
-      toggleDrawer("orgDetailsDrawer", false);
-      toggleDrawer("errorsDrawer", false);
-    }));
+  });
+}
 
-    // Global traps
-    window.addEventListener("error", (e) => reportError({ scope: "window.error", message: e?.message || String(e) }));
-    window.addEventListener("unhandledrejection", (e) => {
-      const reason = e?.reason?.message || String(e?.reason || e);
-      reportError({ scope: "unhandledrejection", message: reason });
-    });
+function updateTrendChart(records) {
+  const ctx = $("trendChart")?.getContext("2d");
+  if (!ctx) return;
 
-    // Initial UI state
-    setAuthUi();
+  const chartData = [...records].reverse().filter(r => r.CompletedDate).map(r => ({
+    t: new Date(r.CreatedDate).toLocaleTimeString(),
+    y: (new Date(r.CompletedDate) - new Date(r.CreatedDate)) / 1000
+  }));
+
+  if (trendChart) trendChart.destroy();
+  trendChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: chartData.map(d => d.t),
+      datasets: [{ label: "Duration (sec)", data: chartData.map(d => d.y), fill: false }]
+    },
+    options: { maintainAspectRatio: false, plugins: { legend: { display: false } } }
+  });
+}
+
+async function fetchDeployments() {
+  const limit = Number($("deployLimit")?.value || 20);
+
+  const soql = `
+    SELECT Id, Status, Type, CheckOnly,
+           CreatedDate, StartDate, CompletedDate,
+           CreatedBy.Name, CreatedById,
+           ErrorStatusCode, ErrorMessage
+    FROM DeployRequest
+    ORDER BY CreatedDate DESC
+    LIMIT ${limit}
+  `.trim();
+
+  setBusy(true, "Deploys…");
+  const { ok, status, json } = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
+  setBusy(false);
+
+  if (!ok) {
+    setSelected(`DeployRequest query failed (HTTP ${status}). See Errors drawer.`);
+    return [];
   }
 
-  // Ensure wiring always happens after DOM exists
-  document.addEventListener("DOMContentLoaded", wireChrome);
+  const recs = json?.records || [];
+  lastDeployments = recs;
 
-  return {
-    BUILD,
-    login,
-    logout,
-    loadToken,
-    handleRedirectIfPresent,
-    sfFetch,
-    extractSfError,
-    showBanner,
-    reportError,
-    clearErrors,
-    wireApiVersionSelect,
-    getApiVersion,
-    loadOrgContext,
-  };
-})();
+  const filtered = recs.filter(passesDeployFilter).filter(passesDeploySearch);
+  renderDeploymentsTable(filtered);
+  updateTrendChart(filtered);
+
+  // Active count
+  const active = filtered.filter(r => ["InProgress", "Queued", "Pending", "Processing", "Running", "Validating"].includes(r.Status)).length;
+  setText("activeCountPill", `Active: ${active}`);
+
+  return filtered;
+}
+
+/* Minimal deploy details placeholder; keep your richer logic if you already implemented it. */
+async function loadDeployDetails(id) {
+  setSelected({ kind: "DeployRequest", Id: id, loading: true });
+  const panel = $("deployDetailsPanel");
+  if (panel) panel.textContent = "Loading deploy details…";
+
+  // NOTE: Metadata deploy details aren’t exposed directly via Tooling.
+  // If you implemented proxy/SOAP metadata calls already, keep that logic here.
+  // For now: show record details only.
+  const soql = `SELECT Id, Status, Type, CheckOnly, CreatedDate, StartDate, CompletedDate, ErrorMessage, ErrorStatusCode FROM DeployRequest WHERE Id='${id}'`;
+  setBusy(true, "Details…");
+  const { ok, status, json } = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
+  setBusy(false);
+
+  if (!ok) {
+    if (panel) panel.textContent = "Failed to load deploy details. See Errors drawer.";
+    return;
+  }
+
+  const rec = json?.records?.[0];
+  if (!rec) {
+    if (panel) panel.textContent = "No details returned.";
+    return;
+  }
+
+  setSelected(rec);
+  if (panel) panel.textContent = "Loaded. (Component-level details require Metadata API deployStatus/SOAP or a proxy.)";
+}
+
+function exportCsv() {
+  const rows = [["Id", "Status", "Type", "CheckOnly", "CreatedDate", "StartDate", "CompletedDate"]];
+  lastDeployments.forEach(r => rows.push([r.Id, r.Status, r.Type, r.CheckOnly, r.CreatedDate, r.StartDate, r.CompletedDate]));
+  const csv = rows.map(r => r.map(v => (v == null ? "" : String(v).replace(/"/g, '""'))).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `deployments_${new Date().toISOString().replace(/[:.]/g, "-")}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function requestNotifyPermission() {
+  if (!("Notification" in window)) return alert("Notifications not supported by this browser.");
+  Notification.requestPermission().then(p => {
+    if (p === "granted") log("Notifications enabled.");
+    else log("Notifications permission not granted.");
+  });
+}
+
+function notifyUser(title, body) {
+  if (Notification.permission === "granted") new Notification(title, { body });
+}
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  const seconds = Number($("pollInterval")?.value || 0);
+  if (!seconds) return;
+
+  pollTimer = setInterval(async () => {
+    if (inFlight) return;
+    await refreshActiveTab(true);
+  }, seconds * 1000);
+
+  log(`Auto-refresh enabled: every ${seconds}s`);
+}
+
+async function refreshActiveTab(isPoll = false) {
+  // Only deployments wired here; extend for tests/packages if needed
+  await fetchDeployments();
+  setText("lastRefreshed", `Last refreshed: ${new Date().toISOString().replace("T", " ").replace("Z", "Z")}`);
+}
+
+/* Wiring */
+document.addEventListener("DOMContentLoaded", async () => {
+  // Complete OAuth redirect if present
+  await Auth.handleRedirectIfPresent();
+
+  // Buttons
+  $("refreshBtn")?.addEventListener("click", () => refreshActiveTab(false));
+  $("clearStorageBtn")?.addEventListener("click", () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    location.reload();
+  });
+  $("exportCsvBtn")?.addEventListener("click", exportCsv);
+  $("enableAlertsBtn")?.addEventListener("click", requestNotifyPermission);
+
+  $("pollInterval")?.addEventListener("change", startPolling);
+  $("deployFilter")?.addEventListener("change", () => fetchDeployments());
+  $("deployLimit")?.addEventListener("change", () => fetchDeployments());
+  $("deploySearch")?.addEventListener("input", () => {
+    const filtered = (lastDeployments || []).filter(passesDeployFilter).filter(passesDeploySearch);
+    renderDeploymentsTable(filtered);
+    updateTrendChart(filtered);
+  });
+
+  // First load if logged in
+  const token = Auth.loadToken();
+  if (token?.access_token) {
+    await Auth.loadOrgContext(true);
+    await fetchDeployments();
+    startPolling();
+  } else {
+    Auth.showBanner("Not logged in. Click Login.");
+  }
+});
