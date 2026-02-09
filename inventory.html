@@ -1,112 +1,53 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Metadata Inventory</title>
-  <meta name="color-scheme" content="dark light" />
-  <link rel="stylesheet" href="styles.css" />
-</head>
+Metadata Inventory (Tooling-based)
+Org URL: Not connected
+Instance: —
+Org Id: —
+User: —
+API: —
+API max: —
+Build: —
+Login Logout Deployments Workbench Mode Org details Errors: 0
 
-<body>
-  <div class="app">
-    <div class="topbar">
-      <div class="title">
-        <h1>Metadata Inventory (Tooling-based)</h1>
-        <div class="pills">
-          <div class="pill">Org: <code id="orgPill">Not connected</code></div>
-          <div class="pill">API: <code id="apiPill">—</code></div>
-          <div class="pill">Build: <code id="buildPill">—</code></div>
-        </div>
-      </div>
+Scope
+        Auto (discover available)
+        Code
+        Automation
+        Metadata-ish
+        Security
+        Content
+        All (may be slow)
+       include large types (Profile/PermissionSet) Per-type limit
+        100
+        250
+        500
+        1000
+       Modified after Run inventory Download CSV
+Idle 0%
+Results (Inventory)
+Last run: — Last request: —
+Type
+API name
+Namespace
+Last modified
+Last modified by
+Created
+Created by
+Id
+Not loaded.
+Errors: 0
+Selected / Log
+Idle
+Nothing selected.
 
-      <div class="actions">
-        <select id="apiVersionSelect" title="Choose REST/Tooling API version"></select>
-        <button id="loginBtn">Login</button>
-        <button id="logoutBtn">Logout</button>
-        <a class="tab" href="index.html">← Back to Deployments</a>
-      </div>
-    </div>
-
-    <div id="authBanner" class="banner"></div>
-
-    <div class="controls">
-      <span class="label">Scope</span>
-      <select id="invScope">
-        <option value="all" selected>All supported types</option>
-        <option value="code">Code (Apex/LWC/Aura)</option>
-        <option value="automation">Automation (Flows)</option>
-        <option value="assets">Assets (Static Resources)</option>
-      </select>
-
-      <span class="label">Per-type limit</span>
-      <select id="invLimit">
-        <option value="100">100</option>
-        <option value="250" selected>250</option>
-        <option value="500">500</option>
-        <option value="1000">1000</option>
-      </select>
-
-      <button id="runInventoryBtn">Run inventory</button>
-      <button id="downloadCsvBtn" disabled>Download CSV</button>
-
-      <div class="progressWrap" style="margin-left:auto;">
-        <span class="muted small" id="progressLabel">Idle</span>
-        <progress id="invProgress" value="0" max="100"></progress>
-        <span class="muted small" id="progressPct">0%</span>
-      </div>
-    </div>
-
-    <div class="layout">
-      <div class="card">
-        <div class="cardHeader">
-          <div class="h">Results</div>
-          <div class="meta">
-            <span id="lastRefreshed" class="muted">Last run: —</span>
-            <span id="lastRequest" class="muted">Last request: —</span>
-          </div>
-        </div>
-
-        <div class="cardBody" style="padding:0;">
-          <div style="max-height: 720px; overflow:auto;">
-            <table>
-              <thead>
-                <tr>
-                  <th>Metadata type</th>
-                  <th>API name</th>
-                  <th>Namespace</th>
-                  <th>Last modified</th>
-                  <th>Modified by</th>
-                  <th>Created</th>
-                  <th>Created by</th>
-                  <th>Id</th>
-                </tr>
-              </thead>
-              <tbody id="invTbody">
-                <tr><td colspan="8" class="muted small">Not loaded.</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="cardHeader">
-          <div class="h">Selected / Log</div>
-          <div class="meta">
-            <span class="badge" id="busyPill">Idle</span>
-          </div>
-        </div>
-        <div class="cardBody">
-          <pre id="selectedPre" class="rightPre" style="min-height: 140px;">Nothing selected.</pre>
-          <div style="height:10px;"></div>
-          <pre id="logPre" class="rightPre">Ready.</pre>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <script src="auth.js"></script>
-  <script src="inventory.js"></script>
-</body>
-</html>
+Ready.
+Org details
+Refresh Close
+Loading…
+Errors
+Clear Close
+No errors.
+Errors
+Clear
+Close
+No errors recorded on this page.
+Tip: errors are recorded when a fetch fails (HTTP status, network error, session expiry), plus uncaught JS errors.
