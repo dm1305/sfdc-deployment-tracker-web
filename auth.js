@@ -1,348 +1,506 @@
-// app.js (FULL FILE - UPDATED)
-// Changes:
-// - Removes any From/To date filter usage (since UI removed)
-// - Ensures Refresh button works even if token absent (shows banner)
-// - Uses Auth wiring; keeps existing features.
+// auth.js (FULL FILE - RESTORED)
+// v2026-02-09.5
+// Implements minimal Salesforce OAuth (implicit grant) + shared UI helpers used by index/inventory/workbench.
+//
+// This project expects a Salesforce Connected App "Consumer Key" (Client ID).
+// If not configured, Login will prompt and store it in localStorage.
+//
+// Security note: This is a pure-static demo. Tokens are stored in localStorage for convenience.
+// For production, prefer a backend and short-lived tokens.
 
-let trendChart = null;
-let heatmapChart = null;
-let pollTimer = null;
-let inFlight = false;
+(function () {
+  const BUILD = "2026-02-09.5";
+  const LS = {
+    clientId: "sfdc_client_id",
+    loginDomain: "sfdc_login_domain",      // "login" | "test" | custom (e.g. mydomain.my.salesforce.com)
+    accessToken: "sfdc_access_token",
+    instanceUrl: "sfdc_instance_url",
+    idUrl: "sfdc_id_url",
+    issuedAt: "sfdc_issued_at",
+    apiVersion: "sfdc_api_version",
+    errors: "sfdc_errors",
+  };
 
-let lastDeployments = [];
-let lastTestRuns = [];
-let deployToTest = new Map();
+  const DEFAULT_LOGIN_DOMAIN = "login"; // login.salesforce.com
+  const DEFAULT_API_VERSION = "60.0";
 
-function $(id) { return document.getElementById(id); }
+  function $(id) { return document.getElementById(id); }
+  function setText(id, t) { const el = $(id); if (el) el.textContent = t; }
 
-function setText(id, text) { const el = $(id); if (el) el.textContent = text; }
-
-function log(msg) {
-  const el = $("logPre");
-  if (!el) return;
-  const stamp = new Date().toISOString();
-  el.textContent = `[${stamp}] ${msg}\n` + el.textContent;
-}
-
-function setSelected(objOrText) {
-  const el = $("selectedPre");
-  if (!el) return;
-  el.textContent = typeof objOrText === "string" ? objOrText : JSON.stringify(objOrText, null, 2);
-}
-
-function setBusy(on, label = null) {
-  inFlight = on;
-  const pill = $("busyPill");
-  if (pill) pill.textContent = on ? (label || "Working…") : "Idle";
-
-  ["refreshBtn", "exportCsvBtn"].forEach((id) => {
-    const b = $(id);
-    if (b) b.disabled = !!on;
-  });
-}
-
-function parseDate(s) {
-  if (!s) return null;
-  const d = new Date(s);
-  return Number.isFinite(d.getTime()) ? d : null;
-}
-
-function fmtTime(d) {
-  if (!d) return "—";
-  return d.toISOString().replace("T", " ").replace("Z", "Z");
-}
-
-function fmtDuration(ms) {
-  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
-  const sec = Math.floor(ms / 1000);
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const s = sec % 60;
-  return `${h}h ${m}m ${s}s`;
-}
-
-function statusClass(status) {
-  const s = String(status || "").toLowerCase();
-  if (["succeeded", "success", "completed"].some((k) => s.includes(k))) return "good";
-  if (["failed", "error"].some((k) => s.includes(k))) return "bad";
-  if (["inprogress", "queued", "pending", "validat", "running", "processing"].some((k) => s.includes(k))) return "warn";
-  return "";
-}
-
-function passesDeployFilter(r) {
-  const filter = $("deployFilter")?.value || "all";
-  const status = String(r.Status || "");
-  const checkOnly = !!r.CheckOnly;
-
-  if (filter === "active") {
-    const active = ["InProgress", "Pending", "Queued", "Processing", "Running", "Validating"];
-    return active.includes(status);
-  }
-  if (filter === "failed") return status.toLowerCase().includes("fail") || status.toLowerCase().includes("error");
-  if (filter === "checkonly") return checkOnly;
-  if (filter === "real") return !checkOnly;
-  return true;
-}
-
-function passesDeploySearch(r) {
-  const q = ($("deploySearch")?.value || "").trim().toLowerCase();
-  if (!q) return true;
-  const blob = [r.Status, r.Type, r.CreatedBy?.Name, r.ErrorStatusCode, r.ErrorMessage, r.Id].filter(Boolean).join(" ").toLowerCase();
-  return blob.includes(q);
-}
-
-function correlationBadge(c) {
-  if (!c) return `<span class="badge muted">Unknown</span>`;
-  const conf = c.confidence || "Low";
-  const out = c.outcome || "Unknown";
-  const cls = /fail/i.test(out) ? "bad" : /pass|succeed/i.test(out) ? "good" : "warn";
-  return `<span class="badge"><span class="status ${cls}">${out}</span><span class="muted">(${conf})</span></span>`;
-}
-
-function renderDeploymentsTable(rows) {
-  const tbody = $("deploymentsTbody");
-  if (!tbody) return;
-
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td class="muted small" colspan="14">No deployments match the current filter/search.</td></tr>`;
-    return;
+  function showBanner(message, kind = "warn") {
+    const el = $("authBanner");
+    if (!el) return;
+    el.textContent = message || "";
+    el.classList.remove("good", "bad", "warn");
+    if (message) el.classList.add(kind === "good" ? "good" : (kind === "bad" ? "bad" : "warn"));
   }
 
-  tbody.innerHTML = rows.map((r) => {
-    const now = new Date();
-    const created = parseDate(r.CreatedDate);
-    const started = parseDate(r.StartDate) || created;
-    const completed = parseDate(r.CompletedDate);
+  function safeJsonParse(s, fallback) {
+    try { return JSON.parse(s); } catch { return fallback; }
+  }
 
-    const queueMs = created && started ? started - created : null;
-    const runMs = started ? (completed ? completed - started : now - started) : null;
-    const totalMs = created ? (completed ? completed - created : now - created) : null;
+  function loadErrors() {
+    return safeJsonParse(localStorage.getItem(LS.errors) || "[]", []);
+  }
+  function saveErrors(arr) {
+    localStorage.setItem(LS.errors, JSON.stringify(arr.slice(0, 200)));
+    setText("errorCount", String(arr.length));
+  }
 
-    const st = r.Status || "—";
-    const stClass = statusClass(st);
+  function reportError(err, ctx = {}) {
+    const errors = loadErrors();
+    const rec = {
+      at: new Date().toISOString(),
+      message: err?.message || String(err),
+      name: err?.name,
+      stack: err?.stack,
+      ctx,
+    };
+    errors.unshift(rec);
+    saveErrors(errors);
+  }
 
-    const type = r.Type || "—";
-    const user = r.CreatedBy?.Name || "—";
+  function renderErrors() {
+    const pre = $("errorsPre");
+    const errors = loadErrors();
+    setText("errorCount", String(errors.length));
+    if (!pre) return;
+    if (!errors.length) {
+      pre.textContent = "No errors.";
+      return;
+    }
+    pre.textContent = errors.map((e, i) => {
+      const c = e.ctx ? JSON.stringify(e.ctx) : "";
+      return `#${i+1}  ${e.at}\n${e.message}\n${c}\n`;
+    }).join("\n");
+  }
 
-    const corr = deployToTest.get(r.Id) || null;
-    const testFails = corr?.failures ?? null;
-    const testMs = corr?.durationMs ?? null;
+  function wireErrorUI() {
+    const errorsBtn = $("errorsBtn");
+    const drawer = $("errorsDrawer");
+    const clearBtn = $("clearErrorsBtn");
 
-    return `
-      <tr data-id="${r.Id}">
-        <td class="status ${stClass}">${st}</td>
-        <td>${user}</td>
-        <td>${type}${r.CheckOnly ? ' <span class="muted">(checkOnly)</span>' : ""}</td>
-        <td class="mono">${fmtTime(created)}</td>
-        <td class="mono">${fmtTime(parseDate(r.StartDate))}</td>
-        <td class="mono">${fmtTime(completed)}</td>
-        <td class="mono">${fmtDuration(queueMs)}</td>
-        <td class="mono">${fmtDuration(runMs)}</td>
-        <td class="mono">${fmtDuration(totalMs)}</td>
-        <td>${correlationBadge(corr)}</td>
-        <td class="mono">${testFails ?? "—"}</td>
-        <td class="mono">${testMs != null ? fmtDuration(testMs) : "—"}</td>
-        <td class="mono">${r.Id}</td>
-        <td>
-          <div class="rowActions">
-            <button class="btnSmall" data-action="details" data-id="${r.Id}">Details</button>
-            <button class="btnSmall" data-action="copy" data-text="${r.Id}">Copy id</button>
-          </div>
-        </td>
-      </tr>
-    `.trim();
-  }).join("\n");
+    if (errorsBtn && drawer) {
+      errorsBtn.addEventListener("click", () => {
+        drawer.classList.add("open");
+        renderErrors();
+      });
+    }
 
-  // Row click loads details
-  tbody.querySelectorAll("tr[data-id]").forEach((tr) => {
-    tr.addEventListener("click", async (e) => {
-      const isButton = (e.target && e.target.tagName === "BUTTON");
-      if (isButton) return;
-      const id = tr.getAttribute("data-id");
-      if (id) await loadDeployDetails(id);
+    if (clearBtn) {
+      clearBtn.addEventListener("click", () => {
+        localStorage.removeItem(LS.errors);
+        saveErrors([]);
+        renderErrors();
+      });
+    }
+
+    document.querySelectorAll(".closeDrawer").forEach((b) => {
+      b.addEventListener("click", () => {
+        const d = b.closest(".drawer");
+        if (d) d.classList.remove("open");
+      });
     });
-  });
+  }
 
-  // Buttons
-  tbody.querySelectorAll("button[data-action]").forEach((btn) => {
-    btn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      const action = btn.getAttribute("data-action");
-      const id = btn.getAttribute("data-id");
-      const text = btn.getAttribute("data-text");
+  function getClientId() {
+    return (localStorage.getItem(LS.clientId) || "").trim();
+  }
 
-      if (action === "details" && id) return loadDeployDetails(id);
+  function getLoginDomain() {
+    return (localStorage.getItem(LS.loginDomain) || DEFAULT_LOGIN_DOMAIN).trim() || DEFAULT_LOGIN_DOMAIN;
+  }
 
-      if (action === "copy") {
-        try { await navigator.clipboard.writeText(text || ""); log("Copied to clipboard."); }
-        catch { log("Clipboard copy failed."); }
+  function authBaseUrl() {
+    const d = getLoginDomain();
+    if (d.includes(".")) return `https://${d}`;
+    if (d === "test") return "https://test.salesforce.com";
+    return "https://login.salesforce.com";
+  }
+
+  function ensureClientConfig() {
+    let clientId = getClientId();
+    if (!clientId) {
+      clientId = (prompt("Enter Salesforce Connected App Client ID (Consumer Key):") || "").trim();
+      if (!clientId) return null;
+      localStorage.setItem(LS.clientId, clientId);
+    }
+
+    let domain = getLoginDomain();
+    if (!domain) {
+      domain = DEFAULT_LOGIN_DOMAIN;
+      localStorage.setItem(LS.loginDomain, domain);
+    }
+    return { clientId, domain };
+  }
+
+  function loadToken() {
+    const accessToken = localStorage.getItem(LS.accessToken);
+    const instanceUrl = localStorage.getItem(LS.instanceUrl);
+    if (accessToken && instanceUrl) {
+      return { accessToken, instanceUrl };
+    }
+    return null;
+  }
+
+  function clearToken() {
+    [LS.accessToken, LS.instanceUrl, LS.idUrl, LS.issuedAt].forEach((k) => localStorage.removeItem(k));
+  }
+
+  function getApiVersion() {
+    return (localStorage.getItem(LS.apiVersion) || DEFAULT_API_VERSION).trim() || DEFAULT_API_VERSION;
+  }
+
+  function setApiVersion(v) {
+    if (!v) return;
+    localStorage.setItem(LS.apiVersion, String(v));
+    setText("apiPill", `v${v}`);
+  }
+
+  async function wireApiVersionSelect() {
+    const sel = $("apiVersionSelect");
+    if (!sel) return;
+
+    sel.innerHTML = "";
+    const current = getApiVersion();
+
+    const tok = loadToken();
+    if (!tok) {
+      ["60.0","59.0","58.0","57.0","56.0"].forEach((v) => {
+        const o = document.createElement("option");
+        o.value = v;
+        o.textContent = `v${v}`;
+        if (v === current) o.selected = true;
+        sel.appendChild(o);
+      });
+    } else {
+      try {
+        const res = await fetch(`${tok.instanceUrl}/services/data/`, {
+          headers: { Authorization: `Bearer ${tok.accessToken}` },
+        });
+        const data = await res.json();
+        const versions = Array.isArray(data) ? data : [];
+        const max = versions.length ? versions[versions.length - 1].version : current;
+
+        versions.slice().reverse().forEach((row) => {
+          const v = row.version;
+          const o = document.createElement("option");
+          o.value = v;
+          o.textContent = `v${v}`;
+          if (v === current) o.selected = true;
+          sel.appendChild(o);
+        });
+        setText("apiMaxPill", max ? `v${max}` : "—");
+      } catch (e) {
+        reportError(e, { where: "wireApiVersionSelect" });
+        ["60.0","59.0","58.0","57.0","56.0"].forEach((v) => {
+          const o = document.createElement("option");
+          o.value = v;
+          o.textContent = `v${v}`;
+          if (v === current) o.selected = true;
+          sel.appendChild(o);
+        });
       }
+    }
+
+    sel.addEventListener("change", () => {
+      setApiVersion(sel.value);
+      showBanner(`API version set to v${sel.value}`, "good");
     });
-  });
-}
-
-function updateTrendChart(records) {
-  const ctx = $("trendChart")?.getContext("2d");
-  if (!ctx) return;
-
-  const chartData = [...records].reverse().filter(r => r.CompletedDate).map(r => ({
-    t: new Date(r.CreatedDate).toLocaleTimeString(),
-    y: (new Date(r.CompletedDate) - new Date(r.CreatedDate)) / 1000
-  }));
-
-  if (trendChart) trendChart.destroy();
-  trendChart = new Chart(ctx, {
-    type: "line",
-    data: {
-      labels: chartData.map(d => d.t),
-      datasets: [{ label: "Duration (sec)", data: chartData.map(d => d.y), fill: false }]
-    },
-    options: { maintainAspectRatio: false, plugins: { legend: { display: false } } }
-  });
-}
-
-async function fetchDeployments() {
-  const limit = Number($("deployLimit")?.value || 20);
-
-  const soql = `
-    SELECT Id, Status, Type, CheckOnly,
-           CreatedDate, StartDate, CompletedDate,
-           CreatedBy.Name, CreatedById,
-           ErrorStatusCode, ErrorMessage
-    FROM DeployRequest
-    ORDER BY CreatedDate DESC
-    LIMIT ${limit}
-  `.trim();
-
-  setBusy(true, "Deploys…");
-  const { ok, status, json } = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
-  setBusy(false);
-
-  if (!ok) {
-    setSelected(`DeployRequest query failed (HTTP ${status}). See Errors drawer.`);
-    return [];
+    setText("apiPill", `v${current}`);
   }
 
-  const recs = json?.records || [];
-  lastDeployments = recs;
-
-  const filtered = recs.filter(passesDeployFilter).filter(passesDeploySearch);
-  renderDeploymentsTable(filtered);
-  updateTrendChart(filtered);
-
-  // Active count
-  const active = filtered.filter(r => ["InProgress", "Queued", "Pending", "Processing", "Running", "Validating"].includes(r.Status)).length;
-  setText("activeCountPill", `Active: ${active}`);
-
-  return filtered;
-}
-
-/* Minimal deploy details placeholder; keep your richer logic if you already implemented it. */
-async function loadDeployDetails(id) {
-  setSelected({ kind: "DeployRequest", Id: id, loading: true });
-  const panel = $("deployDetailsPanel");
-  if (panel) panel.textContent = "Loading deploy details…";
-
-  // NOTE: Metadata deploy details aren’t exposed directly via Tooling.
-  // If you implemented proxy/SOAP metadata calls already, keep that logic here.
-  // For now: show record details only.
-  const soql = `SELECT Id, Status, Type, CheckOnly, CreatedDate, StartDate, CompletedDate, ErrorMessage, ErrorStatusCode FROM DeployRequest WHERE Id='${id}'`;
-  setBusy(true, "Details…");
-  const { ok, status, json } = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
-  setBusy(false);
-
-  if (!ok) {
-    if (panel) panel.textContent = "Failed to load deploy details. See Errors drawer.";
-    return;
+  function extractSfError(body, status) {
+    if (!body) return `HTTP ${status}`;
+    if (typeof body === "string") return body;
+    if (Array.isArray(body) && body.length) {
+      const first = body[0];
+      const msg = first.message || JSON.stringify(first);
+      const code = first.errorCode ? ` (${first.errorCode})` : "";
+      return msg + code;
+    }
+    if (body.message) {
+      const code = body.errorCode ? ` (${body.errorCode})` : "";
+      return body.message + code;
+    }
+    return JSON.stringify(body);
   }
 
-  const rec = json?.records?.[0];
-  if (!rec) {
-    if (panel) panel.textContent = "No details returned.";
-    return;
+  async function sfFetch(path, opts = {}) {
+    const tok = loadToken();
+    if (!tok) {
+      const e = new Error("Not connected to Salesforce. Click Login.");
+      showBanner(e.message, "bad");
+      reportError(e, { where: "sfFetch", path });
+      throw e;
+    }
+
+    const apiVersion = getApiVersion();
+    let url = path;
+
+    if (path.startsWith("http://") || path.startsWith("https://")) {
+      url = path;
+    } else if (path.startsWith("/services/")) {
+      url = tok.instanceUrl + path;
+    } else if (path.startsWith("/")) {
+      url = `${tok.instanceUrl}/services/data/v${apiVersion}${path}`;
+    } else {
+      url = `${tok.instanceUrl}/services/data/v${apiVersion}/${path}`;
+    }
+
+    const headers = new Headers(opts.headers || {});
+    headers.set("Authorization", `Bearer ${tok.accessToken}`);
+    if (!headers.has("Content-Type") && opts.body) headers.set("Content-Type", "application/json");
+
+    const res = await fetch(url, { ...opts, headers });
+    const ct = res.headers.get("content-type") || "";
+    const isJson = ct.includes("application/json");
+
+    let body = null;
+    try {
+      body = isJson ? await res.json() : await res.text();
+    } catch {
+      body = null;
+    }
+
+    if (!res.ok) {
+      const msg = extractSfError(body, res.status);
+      const e = new Error(msg);
+      e.status = res.status;
+      e.body = body;
+      showBanner(`Salesforce error (${res.status}): ${msg}`, "bad");
+      reportError(e, { where: "sfFetch", url, status: res.status, body });
+      if (res.status === 401 || res.status === 403) {
+        showBanner("Auth expired/invalid. Click Login to re-authenticate.", "bad");
+      }
+      throw e;
+    }
+
+    return body;
   }
 
-  setSelected(rec);
-  if (panel) panel.textContent = "Loaded. (Component-level details require Metadata API deployStatus/SOAP or a proxy.)";
-}
+  async function loadOrgContext() {
+    const tok = loadToken();
+    if (!tok) {
+      renderOrgContext(null);
+      return null;
+    }
 
-function exportCsv() {
-  const rows = [["Id", "Status", "Type", "CheckOnly", "CreatedDate", "StartDate", "CompletedDate"]];
-  lastDeployments.forEach(r => rows.push([r.Id, r.Status, r.Type, r.CheckOnly, r.CreatedDate, r.StartDate, r.CompletedDate]));
-  const csv = rows.map(r => r.map(v => (v == null ? "" : String(v).replace(/"/g, '""'))).join(",")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `deployments_${new Date().toISOString().replace(/[:.]/g, "-")}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
+    try {
+      const userinfo = await sfFetch("/services/oauth2/userinfo");
+      renderOrgContext(userinfo);
 
-function requestNotifyPermission() {
-  if (!("Notification" in window)) return alert("Notifications not supported by this browser.");
-  Notification.requestPermission().then(p => {
-    if (p === "granted") log("Notifications enabled.");
-    else log("Notifications permission not granted.");
-  });
-}
+      try {
+        const limits = await sfFetch("/limits");
+        if (limits?.DailyApiRequests?.Max != null) {
+          setText("apiMaxPill", String(limits.DailyApiRequests.Max));
+        }
+      } catch {
+        // ignore
+      }
 
-function notifyUser(title, body) {
-  if (Notification.permission === "granted") new Notification(title, { body });
-}
+      return userinfo;
+    } catch (e) {
+      reportError(e, { where: "loadOrgContext" });
+      return null;
+    }
+  }
 
-function startPolling() {
-  if (pollTimer) clearInterval(pollTimer);
-  const seconds = Number($("pollInterval")?.value || 0);
-  if (!seconds) return;
+  function renderOrgContext(userinfo) {
+    const tok = loadToken();
 
-  pollTimer = setInterval(async () => {
-    if (inFlight) return;
-    await refreshActiveTab(true);
-  }, seconds * 1000);
+    setText("buildPill", BUILD);
 
-  log(`Auto-refresh enabled: every ${seconds}s`);
-}
+    if (!tok || !userinfo) {
+      setText("orgPill", "Not connected");
+      setText("instancePill", "—");
+      setText("orgIdPill", "—");
+      setText("userPill", "—");
+      setText("apiPill", `v${getApiVersion()}`);
+      return;
+    }
 
-async function refreshActiveTab(isPoll = false) {
-  // Only deployments wired here; extend for tests/packages if needed
-  await fetchDeployments();
-  setText("lastRefreshed", `Last refreshed: ${new Date().toISOString().replace("T", " ").replace("Z", "Z")}`);
-}
+    setText("instancePill", tok.instanceUrl || "—");
+    setText("orgIdPill", userinfo.organization_id || "—");
+    setText("userPill", userinfo.preferred_username || userinfo.email || userinfo.user_id || "—");
+    setText("orgPill", userinfo.organization_id ? `${userinfo.organization_id}` : "Connected");
+    setText("apiPill", `v${getApiVersion()}`);
+  }
 
-/* Wiring */
-document.addEventListener("DOMContentLoaded", async () => {
-  // Complete OAuth redirect if present
-  await Auth.handleRedirectIfPresent();
+  async function renderOrgDetails() {
+    const drawer = $("orgDetailsDrawer");
+    const pre = $("orgDetailsPre");
+    if (!pre) return;
 
-  // Buttons
-  $("refreshBtn")?.addEventListener("click", () => refreshActiveTab(false));
-  $("clearStorageBtn")?.addEventListener("click", () => {
-    localStorage.clear();
-    sessionStorage.clear();
-    location.reload();
-  });
-  $("exportCsvBtn")?.addEventListener("click", exportCsv);
-  $("enableAlertsBtn")?.addEventListener("click", requestNotifyPermission);
+    const tok = loadToken();
+    if (!tok) {
+      pre.textContent = "Not connected.";
+      return;
+    }
 
-  $("pollInterval")?.addEventListener("change", startPolling);
-  $("deployFilter")?.addEventListener("change", () => fetchDeployments());
-  $("deployLimit")?.addEventListener("change", () => fetchDeployments());
-  $("deploySearch")?.addEventListener("input", () => {
-    const filtered = (lastDeployments || []).filter(passesDeployFilter).filter(passesDeploySearch);
-    renderDeploymentsTable(filtered);
-    updateTrendChart(filtered);
-  });
+    try {
+      const apiVersion = getApiVersion();
+      const userinfo = await sfFetch("/services/oauth2/userinfo");
+      const limits = await sfFetch("/limits").catch(() => null);
+      const versions = await fetch(`${tok.instanceUrl}/services/data/`, {
+        headers: { Authorization: `Bearer ${tok.accessToken}` },
+      }).then(r => r.json()).catch(() => null);
 
-  // First load if logged in
-  const token = Auth.loadToken();
-  if (token?.access_token) {
-    await Auth.loadOrgContext(true);
-    await fetchDeployments();
-    startPolling();
+      pre.textContent = JSON.stringify({
+        build: BUILD,
+        instanceUrl: tok.instanceUrl,
+        apiVersion,
+        userinfo,
+        limits,
+        versions,
+      }, null, 2);
+
+      const trustSearch = $("trustSearchLink");
+      const trustInstance = $("trustInstanceLink");
+      if (trustSearch) trustSearch.href = "https://trust.salesforce.com/en/";
+      if (trustInstance) {
+        try {
+          const host = new URL(tok.instanceUrl).host;
+          trustInstance.href = `https://trust.salesforce.com/en/status/?instance=${encodeURIComponent(host)}`;
+        } catch {
+          trustInstance.href = "https://trust.salesforce.com/en/status/";
+        }
+      }
+
+      if (drawer) drawer.classList.add("open");
+    } catch (e) {
+      reportError(e, { where: "renderOrgDetails" });
+      pre.textContent = `Error loading org details: ${e.message || e}`;
+    }
+  }
+
+  function handleRedirectIfPresent() {
+    const hash = window.location.hash || "";
+    if (!hash.includes("access_token=")) return false;
+
+    const params = new URLSearchParams(hash.replace(/^#/, ""));
+    const accessToken = params.get("access_token");
+    const instanceUrl = params.get("instance_url");
+    const idUrl = params.get("id");
+    const issuedAt = params.get("issued_at");
+
+    if (accessToken && instanceUrl) {
+      localStorage.setItem(LS.accessToken, accessToken);
+      localStorage.setItem(LS.instanceUrl, instanceUrl);
+      if (idUrl) localStorage.setItem(LS.idUrl, idUrl);
+      if (issuedAt) localStorage.setItem(LS.issuedAt, issuedAt);
+
+      history.replaceState(null, document.title, window.location.pathname + window.location.search);
+      showBanner("Connected to Salesforce.", "good");
+      return true;
+    }
+
+    showBanner("OAuth redirect received but missing access_token/instance_url.", "bad");
+    return false;
+  }
+
+  function login() {
+    const cfg = ensureClientConfig();
+    if (!cfg) {
+      showBanner("Client ID required to login.", "bad");
+      return;
+    }
+
+    const redirectUri = window.location.origin + window.location.pathname;
+    const authUrl = new URL(authBaseUrl() + "/services/oauth2/authorize");
+
+    authUrl.searchParams.set("response_type", "token");
+    authUrl.searchParams.set("client_id", cfg.clientId);
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("scope", "api id");
+    authUrl.searchParams.set("prompt", "login");
+
+    window.location.href = authUrl.toString();
+  }
+
+  function logout() {
+    clearToken();
+    showBanner("Logged out. Token cleared.", "warn");
+    renderOrgContext(null);
+    try { window.location.reload(); } catch {}
+  }
+
+  async function ensureOrgContext() {
+    const tok = loadToken();
+    if (!tok) {
+      renderOrgContext(null);
+      return false;
+    }
+    await loadOrgContext();
+    return true;
+  }
+
+  function wireAuthButtons() {
+    const loginBtn = $("loginBtn");
+    const logoutBtn = $("logoutBtn");
+    if (loginBtn) loginBtn.addEventListener("click", login);
+    if (logoutBtn) logoutBtn.addEventListener("click", logout);
+
+    const tok = loadToken();
+    if (loginBtn) loginBtn.style.display = tok ? "none" : "inline-block";
+    if (logoutBtn) logoutBtn.style.display = tok ? "inline-block" : "none";
+  }
+
+  function wireOrgDetailsUI() {
+    const orgDetailsBtn = $("orgDetailsBtn");
+    const refreshBtn = $("refreshOrgDetailsBtn");
+    if (orgDetailsBtn) orgDetailsBtn.addEventListener("click", renderOrgDetails);
+    if (refreshBtn) refreshBtn.addEventListener("click", renderOrgDetails);
+  }
+
+  async function init() {
+    setText("buildPill", BUILD);
+
+    wireErrorUI();
+    wireAuthButtons();
+    wireOrgDetailsUI();
+
+    const didRedirect = handleRedirectIfPresent();
+    if (didRedirect) wireAuthButtons();
+
+    await wireApiVersionSelect();
+    await loadOrgContext();
+
+    if (!loadToken()) showBanner("Not connected. Click Login.", "warn");
+  }
+
+  window.Auth = {
+    BUILD,
+    LS,
+    // UI
+    $,
+    setText,
+    showBanner,
+    wireErrorUI,
+    renderErrors,
+    reportError,
+    // Auth
+    login,
+    logout,
+    handleRedirectIfPresent,
+    loadToken,
+    clearToken,
+    // Context / versions
+    getApiVersion,
+    setApiVersion,
+    wireApiVersionSelect,
+    loadOrgContext,
+    ensureOrgContext,
+    renderOrgContext,
+    renderOrgDetails,
+    // API
+    sfFetch,
+    extractSfError,
+  };
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
   } else {
-    Auth.showBanner("Not logged in. Click Login.");
+    init();
   }
-});
+})();
