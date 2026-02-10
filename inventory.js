@@ -67,6 +67,20 @@
     return d.toISOString().replace("T", " ").replace("Z", "Z");
   }
 
+  // --- Auth / Tooling helpers (compatible with Auth.sfFetch returning parsed JSON)
+  function apiV() {
+    return (window.Auth && Auth.getApiVersion) ? Auth.getApiVersion() : "60.0";
+  }
+
+  function toolingPath(p) {
+    return `/services/data/v${apiV()}/tooling${p}`;
+  }
+
+  async function toolingFetch(p) {
+    setLastRequest(toolingPath(p));
+    return Auth.sfFetch(toolingPath(p));
+  }
+
   function toUtcStartIso(dateStr) {
     // dateStr is yyyy-mm-dd; interpret as UTC 00:00:00
     if (!dateStr) return null;
@@ -339,15 +353,20 @@
       const soql = `SELECT ${fields} FROM ${typeName}${dateWhere}${baseOrder}${baseLimit}`;
       setLastRequest(`tooling query ${typeName}`);
 
-      const { ok, status, json } = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
+      let json;
+      try {
+        json = await toolingFetch(`/query?q=${encodeURIComponent(soql)}`);
+      } catch (e) {
+        json = { _error: e };
+      }
 
-      if (ok) {
+      if (!json?._error) {
         const recs = json?.records || [];
         return { ok: true, records: recs, usedFields: fieldSets[i], usedWhere: !!dateWhere };
       }
 
       // If the failure is “No such column LastModifiedDate”, try without date filter by switching to CreatedDate filter.
-      const msg = (Auth.extractSfError ? Auth.extractSfError(json) : (json?.[0]?.message || json?.message || "")).toString();
+      const msg = (json?._error?.message || "").toString();
 
       const lastModMissing = /No such column 'LastModifiedDate'/i.test(msg) || /LastModifiedDate.*not supported/i.test(msg);
       if (lastModMissing && (changedFromIso || changedToIso)) {
@@ -359,9 +378,14 @@
         const soql2 = `SELECT ${fields} FROM ${typeName}${where2} ORDER BY CreatedDate DESC NULLS LAST${baseLimit}`;
         setLastRequest(`tooling query ${typeName} (CreatedDate fallback)`);
 
-        const r2 = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql2)}`, { tooling: true });
-        if (r2.ok) {
-          const recs2 = r2.json?.records || [];
+        let r2;
+        try {
+          r2 = await toolingFetch(`/query?q=${encodeURIComponent(soql2)}`);
+        } catch (e) {
+          r2 = { _error: e };
+        }
+        if (!r2?._error) {
+          const recs2 = r2?.records || [];
           return { ok: true, records: recs2, usedFields: fieldSets[i], usedWhere: !!where2 };
         }
       }
