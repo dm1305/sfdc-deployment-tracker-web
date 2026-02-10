@@ -1,230 +1,42 @@
-<!-- index.html (FULL FILE - UPDATED) -->
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>SFDC Deployment Tracker (Web)</title>
-  <meta name="color-scheme" content="dark light" />
-  <link rel="stylesheet" href="./P26-02-10.1" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <link rel="stylesheet" href="./styles.css?v=2026-02-10.2">
 </head>
-
 <body>
-  <div class="app">
-
-    <!-- TOP BAR -->
-    <div class="topbar">
-      <div class="title">
-        <h1>SFDC Deployment Tracker (Web)</h1>
-        <div class="pills">
-          <div class="pill">Org: <code id="orgPill">Not connected</code></div>
-          <div class="pill">Instance: <code id="instancePill">—</code></div>
-          <div class="pill">Org Id: <code id="orgIdPill">—</code></div>
-          <div class="pill">User: <code id="userPill">—</code></div>
-          <div class="pill">API: <code id="apiPill">—</code></div>
-          <div class="pill">API max: <code id="apiMaxPill">—</code></div>
-          <div class="pill">Build: <code id="buildPill">—</code></div>
-        </div>
-      </div>
-
-      <div class="actions">
-        <select id="apiVersionSelect" title="API version"></select>
-
-        <!-- Auth buttons: visibility controlled by auth.js -->
-        <button id="loginBtn">Login</button>
-        <button id="logoutBtn">Logout</button>
-
-        <button id="refreshBtn">Refresh</button>
-        <button id="clearStorageBtn">Clear storage</button>
-        <button id="orgDetailsBtn">Org details</button>
-        <button id="errorsBtn">Errors: <span id="errorCount">0</span></button>
-      </div>
+  <header class="bar">
+    <h1>SFDC Deployment Tracker (Web)</h1>
+    <div class="actions">
+      <button id="loginBtn">Login</button>
+      <button id="logoutBtn">Logout</button>
+      <span id="statusPill">Not connected</span>
     </div>
+  </header>
 
-    <div id="authBanner" class="banner"></div>
+  <main>
+    <section class="panel">
+      <h2>Deployments</h2>
+      <button id="refreshBtn">Refresh</button>
+      <table>
+        <thead>
+          <tr><th>Status</th><th>Type</th><th>Created</th><th>Id</th></tr>
+        </thead>
+        <tbody id="deploymentsTbody">
+          <tr><td colspan="4" class="muted">Not loaded.</td></tr>
+        </tbody>
+      </table>
+    </section>
 
-    <!-- NAV -->
-    <div class="tabs">
-      <div class="tab active" id="tabDeployments">Deployments</div>
-      <div class="tab" id="tabApexTests">Apex tests</div>
-      <div class="tab" id="tabPackages">Packages</div>
-      <a class="tab" href="./inventory.html">Metadata inventory</a>
-      <a class="tab" href="./workbench.html">Workbench tester</a>
-    </div>
+    <section class="panel">
+      <h2>Log</h2>
+      <pre id="logPre"></pre>
+    </section>
+  </main>
 
-    <!-- CONTROLS: DEPLOYMENTS -->
-    <div class="controls" id="deploymentsControls">
-      <span class="label">Auto-refresh</span>
-      <select id="pollInterval" title="How often to auto-refresh. 0 disables polling.">
-        <option value="0">Off</option>
-        <option value="10">10s</option>
-        <option value="30" selected>30s</option>
-        <option value="60">60s</option>
-      </select>
-
-      <span class="label">Show</span>
-      <select id="deployFilter" title="Filter deployments by status or checkOnly">
-        <option value="all" selected>All</option>
-        <option value="active">Active</option>
-        <option value="failed">Failed</option>
-        <option value="checkonly">Validations (checkOnly)</option>
-        <option value="real">Real deploys</option>
-      </select>
-
-      <span class="label">Limit</span>
-      <select id="deployLimit" title="How many DeployRequest rows to query">
-        <option>10</option>
-        <option selected>20</option>
-        <option>50</option>
-        <option>100</option>
-      </select>
-
-      <input id="deploySearch" placeholder="Search status/type/user/id/error…" title="Client-side search across fetched rows" style="min-width: 320px;" />
-
-      <!-- DATE RANGE FILTER REMOVED per request -->
-
-      <button id="exportCsvBtn" title="Export current rows to CSV">Export CSV</button>
-      <button id="enableAlertsBtn" title="Enable browser notifications">Enable alerts</button>
-
-      <span class="muted small" id="activeCountPill" style="margin-left:auto;">Active: —</span>
-    </div>
-
-    <!-- CONTROLS: APEX TESTS -->
-    <div class="controls" id="apexTestsControls" style="display:none;">
-      <span class="label">Limit</span>
-      <select id="testLimit" title="How many ApexTestRun rows to fetch">
-        <option>10</option>
-        <option selected>20</option>
-        <option>50</option>
-        <option>100</option>
-      </select>
-
-      <span class="label">Show</span>
-      <select id="testFilter" title="Filter test runs by outcome">
-        <option value="all" selected>All</option>
-        <option value="failed">Failed only</option>
-        <option value="passed">Passed only</option>
-      </select>
-
-      <input id="testSearch" placeholder="Search user/status/run id…" title="Client-side search across test runs" style="min-width: 320px;" />
-      <button id="refreshTestsBtn" title="Refresh test runs now">Refresh tests</button>
-    </div>
-
-    <!-- CONTROLS: PACKAGES -->
-    <div class="controls" id="packagesControls" style="display:none;">
-      <input id="pkgSearch" placeholder="Search package name/namespace…" title="Search packages client-side" style="min-width: 320px;" />
-      <button id="refreshPackagesBtn" title="Refresh installed packages inventory">Refresh packages</button>
-    </div>
-
-    <div class="layout">
-      <!-- LEFT: RESULTS -->
-      <div class="card">
-        <div class="cardHeader">
-          <div class="h" id="resultsTitle">Results (Deployments)</div>
-          <div class="meta">
-            <span id="lastRefreshed" class="muted">Last refreshed: —</span>
-            <span id="lastRequest" class="muted">Last request: —</span>
-          </div>
-        </div>
-
-        <div class="cardBody" style="padding:0;">
-          <div style="padding:12px;">
-            <div class="h" style="margin-bottom:8px;">Duration trend</div>
-            <canvas id="trendChart" height="120"></canvas>
-            <div class="hint">Uses completed deployments in the current result set.</div>
-          </div>
-
-          <div style="max-height: 720px; overflow:auto;">
-            <table>
-              <thead>
-                <tr>
-                  <th title="DeployRequest.Status">Status</th>
-                  <th title="DeployRequest.CreatedBy.Name">User</th>
-                  <th title="DeployRequest.Type + checkOnly">Type</th>
-                  <th title="DeployRequest.CreatedDate">Created</th>
-                  <th title="DeployRequest.StartDate">Started</th>
-                  <th title="DeployRequest.CompletedDate">Completed</th>
-                  <th title="Queue time = StartDate - CreatedDate">Queue time</th>
-                  <th title="Run time = CompletedDate - StartDate">Run time</th>
-                  <th title="Total time = CompletedDate - CreatedDate">Total time</th>
-                  <th title="Correlation to an ApexTestRun near this deploy">Tests</th>
-                  <th title="Failures for correlated run">Test fails</th>
-                  <th title="Duration for correlated run">Test time</th>
-                  <th title="DeployRequest.Id">Id</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody id="deploymentsTbody">
-                <tr><td colspan="14" class="muted small">Not loaded.</td></tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <!-- RIGHT: DETAILS -->
-      <div class="card">
-        <div class="cardHeader">
-          <div class="h">Details / Insights / Log</div>
-          <div class="meta">
-            <span id="busyPill" class="badge">Idle</span>
-          </div>
-        </div>
-        <div class="cardBody">
-          <pre id="selectedPre" class="rightPre" style="min-height: 140px;">Nothing selected.</pre>
-
-          <h4>Deployment details (row-click)</h4>
-          <div id="deployDetailsPanel" class="hint">Select a deployment row to load details.</div>
-
-          <h4>Bottleneck insights</h4>
-          <div id="insightsPanel" class="hint">—</div>
-
-          <h4>Test heatmap (slowest Apex classes)</h4>
-          <div class="hint">
-            Aggregated from ApexTestResult runtimes for the correlated test run (if found).
-            Flags tests ≥ 8000ms as CPU timeout risk.
-          </div>
-          <canvas id="heatmapChart" height="160"></canvas>
-
-          <h4>Side-by-side compare</h4>
-          <div class="row">
-            <input id="compareIdA" placeholder="Deploy Id A" />
-            <input id="compareIdB" placeholder="Deploy Id B" />
-            <button id="compareBtn">Compare</button>
-          </div>
-
-          <h4>Log</h4>
-          <pre id="logPre" class="rightPre">Ready.</pre>
-        </div>
-      </div>
-    </div>
-
-    <!-- ORG DRAWER -->
-    <div id="orgDetailsDrawer" class="drawer">
-      <h3>Org details</h3>
-      <pre id="orgDetailsPre">Loading…</pre>
-      <div class="row">
-        <a id="trustSearchLink" target="_blank">Trust (search)</a>
-        <a id="trustInstanceLink" target="_blank">Trust (instance)</a>
-        <button id="refreshOrgDetailsBtn">Refresh</button>
-        <button class="closeDrawer">Close</button>
-      </div>
-    </div>
-
-    <!-- ERRORS DRAWER -->
-    <div id="errorsDrawer" class="drawer">
-      <h3>Errors</h3>
-      <pre id="errorsPre">No errors.</pre>
-      <div class="row">
-        <button id="clearErrorsBtn">Clear</button>
-        <button class="closeDrawer">Close</button>
-      </div>
-    </div>
-
-  </div>
-
-  <script src="./P26-02-10.1"></script>
-  <script src="./P26-02-10.1"></script>
+  <script src="./auth.js?v=2026-02-10.2" defer></script>
+  <script src="./app.js?v=2026-02-10.2" defer></script>
 </body>
 </html>
