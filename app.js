@@ -8,8 +8,8 @@
 //       DeployRequest and ApexTestRun to select only fields that exist.
 
 // ====== CONFIG (edit these) ======
-const CLIENT_ID = "PASTE_YOUR_CONNECTED_APP_CLIENT_ID";
-const LOGIN_DOMAIN = "https://YOUR_MY_DOMAIN.my.salesforce.com"; // e.g. https://example--dev.sandbox.my.salesforce.com
+const CLIENT_ID = "3MVG9YFqzc_KnL.wada6.pbgp4zDPc8T6u6uR6srOVo1fS7XOD_kHsrDH_QurZzXeEgwzWBU365_xXQ54mMNn";
+const LOGIN_DOMAIN = "https://gearsetcom-4bf-dev-ed.develop.my.salesforce.com"; // e.g. https://example--dev.sandbox.my.salesforce.com
 // =================================
 
 // Storage keys
