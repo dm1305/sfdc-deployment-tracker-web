@@ -1,509 +1,349 @@
-// auth.js (FULL FILE - UPDATED)
-// v2026-02-09.11
-// Purpose: OAuth (Authorization Code + PKCE) + shared Salesforce REST helper + shared UI wiring.
-// Notes:
-// - Works for GitHub Pages / localhost.
-// - Uses PKCE (no client secret in browser).
-// - Stores token in localStorage so all pages share auth state.
-// - Provides both camelCase and snake_case token shapes for compatibility.
+/* auth.js - stable SPA auth + API helper (PKCE)
+   Build: 2026-02-10.1
+   Stores:
+     localStorage.sfdc_client_id
+     localStorage.sfdc_login_host
+     localStorage.sfdc_api_version
+     sessionStorage.sfdc_pkce_verifier
+     sessionStorage.sfdc_oauth_state
+     localStorage.sfdc_access_token
+     localStorage.sfdc_instance_url
+*/
 
-(() => {
-  "use strict";
-
-      const BUILD = "2026-02-09.11";
-
+(function() {
   const LS = {
     clientId: "sfdc_client_id",
-    loginHost: "sfdc_login_host",           // "login.salesforce.com" or "test.salesforce.com" or custom domain
+    loginHost: "sfdc_login_host",
+    apiVersion: "sfdc_api_version",
     accessToken: "sfdc_access_token",
     instanceUrl: "sfdc_instance_url",
-    idUrl: "sfdc_id_url",
-    issuedAt: "sfdc_issued_at",
-    scope: "sfdc_scope",
-    tokenType: "sfdc_token_type",
-    apiVersion: "sfdc_api_version",
-    pkceVerifier: "sfdc_pkce_verifier",
-    lastErrors: "sfdc_last_errors",
+    lastAuthAt: "sfdc_last_auth_at"
+  };
+  const SS = {
+    verifier: "sfdc_pkce_verifier",
+    state: "sfdc_oauth_state"
   };
 
-  function $(id) { return document.getElementById(id); }
-
-  function nowIso() { return new Date().toISOString(); }
-
-  function safeJsonParse(s, fallback) {
-    try { return JSON.parse(s); } catch { return fallback; }
+  function qs(name) {
+    const u = new URL(location.href);
+    return u.searchParams.get(name);
   }
 
-  function pushError(entry) {
-    const cur = safeJsonParse(localStorage.getItem(LS.lastErrors) || "[]", []);
-    cur.unshift({ ts: nowIso(), ...entry });
-    localStorage.setItem(LS.lastErrors, JSON.stringify(cur.slice(0, 50)));
-    renderErrorCount();
+  function b64url(bytes) {
+    let s = btoa(String.fromCharCode.apply(null, bytes));
+    return s.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
   }
 
-  function renderErrorCount() {
-    const el = $("errorCount");
-    if (!el) return;
-    const cur = safeJsonParse(localStorage.getItem(LS.lastErrors) || "[]", []);
-    el.textContent = String(cur.length);
+  async function sha256(str) {
+    const enc = new TextEncoder().encode(str);
+    const hash = await crypto.subtle.digest("SHA-256", enc);
+    return new Uint8Array(hash);
   }
 
-  function setBanner(msg, kind = "info") {
-    const el = $("authBanner");
-    if (!el) return;
-    el.textContent = msg || "";
-    el.style.display = msg ? "block" : "none";
-    el.dataset.kind = kind;
+  function randString(len=64) {
+    const arr = new Uint8Array(len);
+    crypto.getRandomValues(arr);
+    return b64url(arr);
   }
 
-  function setPill(id, val) {
-    const el = $(id);
-    if (el) el.textContent = val ?? "—";
-  }
-
-  function getLoginHost() {
-    return (localStorage.getItem(LS.loginHost) || "login.salesforce.com").trim();
+  function canonicalRedirectUri() {
+    // Always normalize to the repo root folder URL (trailing slash).
+    // This avoids redirect_uri_mismatch when jumping between index/inventory/workbench.
+    return new URL("./", location.href).href;
   }
 
   function getClientId() {
     return (localStorage.getItem(LS.clientId) || "").trim();
   }
 
-  function getRedirectUri() {
-    // Canonical: origin + pathname (no query/hash)
-    return window.location.origin + window.location.pathname;
+  function getLoginHost() {
+    return (localStorage.getItem(LS.loginHost) || "").trim() || "login.salesforce.com";
   }
 
-  function base64UrlEncode(bytes) {
-    const bin = Array.from(bytes, (b) => String.fromCharCode(b)).join("");
-    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  function getApiVersion() {
+    return (localStorage.getItem(LS.apiVersion) || "").trim() || "60.0";
   }
 
-  async function sha256Base64Url(input) {
-    const data = new TextEncoder().encode(input);
-    const digest = await crypto.subtle.digest("SHA-256", data);
-    return base64UrlEncode(new Uint8Array(digest));
-  }
-
-  function randomString(len = 64) {
-    const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~";
-    const rnd = crypto.getRandomValues(new Uint8Array(len));
-    return Array.from(rnd, (b) => chars[b % chars.length]).join("");
-  }
-
-  function loadToken() {
-    const accessToken = localStorage.getItem(LS.accessToken);
-    const instanceUrl = localStorage.getItem(LS.instanceUrl);
-    const idUrl = localStorage.getItem(LS.idUrl) || null;
-    const issuedAt = localStorage.getItem(LS.issuedAt) || null;
-    const scope = localStorage.getItem(LS.scope) || null;
-    const tokenType = localStorage.getItem(LS.tokenType) || null;
-
-    if (accessToken && instanceUrl) {
-      return {
-        // camelCase
-        accessToken,
-        instanceUrl,
-        idUrl,
-        issuedAt,
-        scope,
-        tokenType,
-        // snake_case
-        access_token: accessToken,
-        instance_url: instanceUrl,
-        id: idUrl,
-        issued_at: issuedAt,
-      };
-    }
-    return null;
-  }
-
-  function saveToken(tokenResp) {
-    localStorage.setItem(LS.accessToken, tokenResp.access_token);
-    localStorage.setItem(LS.instanceUrl, tokenResp.instance_url);
-    if (tokenResp.id) localStorage.setItem(LS.idUrl, tokenResp.id);
-    if (tokenResp.issued_at) localStorage.setItem(LS.issuedAt, tokenResp.issued_at);
-    if (tokenResp.scope) localStorage.setItem(LS.scope, tokenResp.scope);
-    if (tokenResp.token_type) localStorage.setItem(LS.tokenType, tokenResp.token_type);
-  }
-
-  function clearToken() {
-    [LS.accessToken, LS.instanceUrl, LS.idUrl, LS.issuedAt, LS.scope, LS.tokenType, LS.pkceVerifier].forEach((k) => localStorage.removeItem(k));
-  }
-
-  function ensureApiVersionSelect() {
-    const sel = $("apiVersionSelect");
-    if (!sel) return;
-
-    if (sel.options.length === 0) {
-      // Populate 60.0 down to 40.0
-      for (let v = 60; v >= 40; v--) {
-        const opt = document.createElement("option");
-        opt.value = `v${v}.0`;
-        opt.textContent = `v${v}.0`;
-        sel.appendChild(opt);
-      }
-    }
-
-    const stored = localStorage.getItem(LS.apiVersion);
-    if (stored) sel.value = stored;
-
-    sel.addEventListener("change", () => {
-      localStorage.setItem(LS.apiVersion, sel.value);
-      setPill("apiPill", sel.value);
-    });
-  }
-
-  function apiVersion() {
-    return localStorage.getItem(LS.apiVersion) || "v60.0";
-  }
-
-  async function sfFetch(path, init = {}) {
-    const tok = loadToken();
-    if (!tok) throw new Error("Not logged in.");
-
-    const url = path.startsWith("http") ? path : `${tok.instanceUrl}${path}`;
-    const headers = new Headers(init.headers || {});
-    headers.set("Authorization", `Bearer ${tok.accessToken}`);
-    if (!headers.has("Content-Type") && init.body && typeof init.body === "string") {
-      headers.set("Content-Type", "application/json");
-    }
-
-    const res = await fetch(url, { ...init, headers });
-    const text = await res.text();
-    let body = null;
-    try { body = text ? JSON.parse(text) : null; } catch { body = text; }
-
-    if (!res.ok) {
-      const msg = (body && body[0] && body[0].message) ? body[0].message : res.statusText;
-      const err = new Error(`Salesforce ${res.status}: ${msg}`);
-      err.status = res.status;
-      err.body = body;
-      err.url = url;
-      pushError({ where: "sfFetch", status: res.status, url, body });
-      throw err;
-    }
-
-    return body;
-  }
-
-  async function fetchIdentityAndUpdatePills() {
-    const tok = loadToken();
-    if (!tok) {
-      setPill("orgPill", "Not connected");
-      setPill("instancePill", "—");
-      setPill("orgIdPill", "—");
-      setPill("userPill", "—");
-      setPill("apiPill", "—");
-      setPill("apiMaxPill", "—");
-      setPill("buildPill", "—");
+  function setBanner(msg, kind="error") {
+    const el = document.getElementById("authBanner");
+    if (!el) return;
+    if (!msg) {
+      el.style.display = "none";
+      el.textContent = "";
+      el.classList.remove("warn","ok","error");
       return;
     }
-
-    setPill("instancePill", tok.instanceUrl);
-    setPill("apiPill", apiVersion());
-    setPill("buildPill", BUILD);
-
-    // Avoid calling token response "id" URL (often on login.salesforce.com) — it lacks CORS headers.
-    // Use same-instance REST endpoints instead.
-
-    // User info
-    try {
-      const me = await sfFetch(`/services/data/${apiVersion()}/chatter/users/me`);
-      if (me) {
-        setPill("userPill", me.username || me.email || me.name || "—");
-      }
-    } catch (e) {
-      pushError({ where: "chatter_me", message: e.message });
-    }
-
-    // Org info
-    try {
-      const soql = "SELECT Id, Name FROM Organization LIMIT 1";
-      const orgRes = await sfFetch(`/services/data/${apiVersion()}/query/?q=${encodeURIComponent(soql)}`);
-      const org = orgRes?.records?.[0];
-      if (org) {
-        setPill("orgIdPill", org.Id || "—");
-        setPill("orgPill", org.Name || org.Id || "Connected");
-      } else {
-        setPill("orgPill", "Connected");
-      }
-    } catch (e) {
-      pushError({ where: "org_query", message: e.message });
-      setPill("orgPill", "Connected");
-    }
-
-    // API request limit (best-effort)
-    try {
-      const limits = await sfFetch(`/services/data/${apiVersion()}/limits`);
-      if (limits?.DailyApiRequests?.Max != null) {
-        setPill("apiMaxPill", String(limits.DailyApiRequests.Max));
-      }
-    } catch {}
+    el.style.display = "block";
+    el.textContent = msg;
+    el.classList.remove("warn","ok","error");
+    el.classList.add(kind === "ok" ? "ok" : kind === "warn" ? "warn" : "error");
   }
 
-    setPill("instancePill", tok.instanceUrl);
-    setPill("apiPill", apiVersion());
-    setPill("buildPill", BUILD);
-
-    // Try identity endpoint (id URL returned by token response)
-    if (tok.idUrl) {
-      try {
-        const ident = await sfFetch(tok.idUrl);
-        // identity payload typically includes user_id and organization_id and username
-        setPill("orgIdPill", ident.organization_id || "—");
-        setPill("userPill", ident.username || "—");
-        setPill("orgPill", ident.organization_id ? ident.organization_id : "Connected");
-      } catch (e) {
-        // Not fatal
-        pushError({ where: "identity", message: e.message });
-      }
-    } else {
-      setPill("orgPill", "Connected");
-    }
-
-    // Try limits to show API max
-    try {
-      const limits = await sfFetch(`/services/data/${apiVersion()}/limits`);
-      if (limits?.DailyApiRequests) {
-        setPill("apiMaxPill", String(limits.DailyApiRequests.Max));
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  function showLoginState() {
-    const tok = loadToken();
-    const loginBtn = $("loginBtn");
-    const logoutBtn = $("logoutBtn");
-    if (loginBtn) loginBtn.style.display = tok ? "none" : "inline-flex";
-    if (logoutBtn) logoutBtn.style.display = tok ? "inline-flex" : "none";
-  }
-
-  async function login() {
+  function ensureSettings() {
     const clientId = getClientId();
-    if (!clientId) {
-      // Minimal UX: prompt for Client ID once, store for future use.
-      const entered = window.prompt("Enter Salesforce Connected App Consumer Key (Client ID):");
-      if (entered && entered.trim()) {
-        localStorage.setItem(LS.clientId, entered.trim());
-      } else {
-        setBanner("Missing Client ID. Cannot start login.", "error");
-        throw new Error("Missing Client ID");
-      }
-    }
+    if (clientId) return true;
 
-    // Optional: allow switching between login and test quickly if not set.
-    const hostStored = localStorage.getItem(LS.loginHost);
-    if (!hostStored) {
-      const hostEntered = window.prompt("Login host (default login.salesforce.com). Use test.salesforce.com for sandboxes:", "login.salesforce.com");
-      if (hostEntered && hostEntered.trim()) localStorage.setItem(LS.loginHost, hostEntered.trim());
-    }
-
-    const verifier = randomString(96);
-    localStorage.setItem(LS.pkceVerifier, verifier);
-    const challenge = await sha256Base64Url(verifier);
-
-    const host = getLoginHost();
-    const redirect = getRedirectUri();
-
-    const params = new URLSearchParams();
-    params.set("response_type", "code");
-    params.set("client_id", clientId);
-    params.set("redirect_uri", redirect);
-    params.set("scope", "api id");
-    params.set("prompt", "login");
-    params.set("code_challenge", challenge);
-    params.set("code_challenge_method", "S256");
-
-    window.location.assign(`https://${host}/services/oauth2/authorize?${params.toString()}`);
+    // Lightweight: prompt the first time (keeps UI stable).
+    const entered = prompt("Missing Client ID. Paste your Salesforce Connected App Consumer Key (Client Id):");
+    if (!entered) return false;
+    localStorage.setItem(LS.clientId, entered.trim());
+    return true;
   }
 
-  async function handleRedirectIfPresent() {
-    const url = new URL(window.location.href);
-    const err = url.searchParams.get("error");
-    const code = url.searchParams.get("code");
+  async function startLogin() {
+    if (!ensureSettings()) return;
+
+    const clientId = getClientId();
+    const loginHost = getLoginHost();
+    const redirectUri = canonicalRedirectUri();
+
+    const verifier = randString(64);
+    const challenge = b64url(await sha256(verifier));
+
+    // Preserve where the user was.
+    const returnTo = location.pathname + location.search + location.hash;
+    const stateObj = {
+      nonce: randString(24),
+      returnTo
+    };
+    const state = b64url(new TextEncoder().encode(JSON.stringify(stateObj)));
+
+    sessionStorage.setItem(SS.verifier, verifier);
+    sessionStorage.setItem(SS.state, state);
+
+    const authUrl = new URL(`https://${loginHost}/services/oauth2/authorize`);
+    authUrl.searchParams.set("response_type", "code");
+    authUrl.searchParams.set("client_id", clientId);
+    authUrl.searchParams.set("redirect_uri", redirectUri);
+    authUrl.searchParams.set("scope", "api id"); // keep minimal
+    authUrl.searchParams.set("code_challenge", challenge);
+    authUrl.searchParams.set("code_challenge_method", "S256");
+    authUrl.searchParams.set("state", state);
+    authUrl.searchParams.set("prompt", "login");
+
+    location.assign(authUrl.toString());
+  }
+
+  async function completeLoginFromRedirect() {
+    const code = qs("code");
+    const err = qs("error");
+    const errDesc = qs("error_description");
 
     if (err) {
-      const desc = url.searchParams.get("error_description") || "";
-      pushError({ where: "oauth_redirect", error: err, error_description: desc });
-      setBanner(`OAuth error: ${err} ${desc}`, "error");
-      // Clean URL
-      url.searchParams.delete("error");
-      url.searchParams.delete("error_description");
-      window.history.replaceState({}, "", url.toString());
-      return;
+      setBanner(`OAuth error: ${decodeURIComponent(err)} ${errDesc ? " - " + decodeURIComponent(errDesc) : ""}`, "error");
+      return false;
+    }
+    if (!code) return false;
+
+    const state = qs("state") || "";
+    const expectedState = sessionStorage.getItem(SS.state) || "";
+    if (!expectedState || state !== expectedState) {
+      setBanner("OAuth state mismatch. Click Login again.", "error");
+      return false;
     }
 
-    if (!code) return;
-
-    const verifier = localStorage.getItem(LS.pkceVerifier) || "";
+    const verifier = sessionStorage.getItem(SS.verifier);
     if (!verifier) {
-      setBanner("Missing PKCE verifier. Try logging in again (Clear storage).", "error");
-      return;
+      setBanner("Missing PKCE verifier. Click Login again.", "error");
+      return false;
     }
 
-    const tokenUrl = `https://${getLoginHost()}/services/oauth2/token`;
+    const clientId = getClientId();
+    const loginHost = getLoginHost();
+    const redirectUri = canonicalRedirectUri();
+
+    setBanner("Completing login…", "warn");
+
+    const tokenUrl = `https://${loginHost}/services/oauth2/token`;
     const body = new URLSearchParams();
     body.set("grant_type", "authorization_code");
-    body.set("client_id", getClientId());
+    body.set("client_id", clientId);
     body.set("code", code);
-    body.set("redirect_uri", getRedirectUri());
+    body.set("redirect_uri", redirectUri);
     body.set("code_verifier", verifier);
 
-    const res = await fetch(tokenUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: body.toString(),
-    });
-
-    const text = await res.text();
-    let json = null;
-    try { json = JSON.parse(text); } catch { json = { error: "invalid_json", raw: text }; }
-
-    if (!res.ok) {
-      pushError({ where: "token_exchange", status: res.status, body: json });
-      setBanner(`Token exchange failed: ${json.error || res.status} ${json.error_description || ""}`, "error");
-      return;
+    let json;
+    try {
+      const resp = await fetch(tokenUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body
+      });
+      const text = await resp.text();
+      try { json = JSON.parse(text); } catch { json = { error: "parse_error", raw: text }; }
+      if (!resp.ok) {
+        throw new Error(json.error_description || json.error || `Token exchange failed (${resp.status})`);
+      }
+    } catch (e) {
+      setBanner(`Auth failed during token exchange. If you see a NetworkError, verify login host and that the Connected App allows this callback: ${redirectUri}. Details: ${e.message}`, "error");
+      return false;
     }
 
-    saveToken(json);
-    localStorage.removeItem(LS.pkceVerifier);
+    localStorage.setItem(LS.accessToken, json.access_token);
+    localStorage.setItem(LS.instanceUrl, json.instance_url);
+    localStorage.setItem(LS.lastAuthAt, new Date().toISOString());
 
-    // Clean URL
-    url.searchParams.delete("code");
-    url.searchParams.delete("state");
-    window.history.replaceState({}, "", url.origin + url.pathname);
+    sessionStorage.removeItem(SS.verifier);
+    sessionStorage.removeItem(SS.state);
 
-    setBanner("Logged in.", "ok");
+    // Clean the URL (remove code/state)
+    const u = new URL(location.href);
+    u.searchParams.delete("code");
+    u.searchParams.delete("state");
+    u.searchParams.delete("error");
+    u.searchParams.delete("error_description");
+    history.replaceState(null, "", u.toString());
+
+    // Return to original page.
+    try {
+      const stateObj = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(state.replace(/-/g,"+").replace(/_/g,"/")), c=>c.charCodeAt(0))));
+      if (stateObj && stateObj.returnTo && stateObj.returnTo !== (location.pathname + location.search + location.hash)) {
+        location.replace(stateObj.returnTo);
+        return true;
+      }
+    } catch (_) {}
+
+    setBanner("", "ok");
+    return true;
   }
 
-  async function logout() {
-    clearToken();
-    showLoginState();
-    await fetchIdentityAndUpdatePills();
-    setBanner("Logged out.", "info");
+  function isLoggedIn() {
+    return !!localStorage.getItem(LS.accessToken) && !!localStorage.getItem(LS.instanceUrl);
   }
 
-  async function renderOrgDetails() {
-    const drawer = $("orgDetailsDrawer");
-    const pre = $("orgDetailsPre");
-    if (!drawer || !pre) return;
+  function logout() {
+    localStorage.removeItem(LS.accessToken);
+    localStorage.removeItem(LS.instanceUrl);
+    setBanner("Logged out (local token cleared).", "ok");
+    renderAuthButtons();
+  }
 
-    drawer.classList.add("open");
-    pre.textContent = "Loading…";
+  function renderAuthButtons() {
+    const loginBtn = document.getElementById("loginBtn");
+    const logoutBtn = document.getElementById("logoutBtn");
+    if (loginBtn) loginBtn.style.display = isLoggedIn() ? "none" : "";
+    if (logoutBtn) logoutBtn.style.display = isLoggedIn() ? "" : "none";
+  }
+
+  async function sfFetch(path, opts={}) {
+    if (!isLoggedIn()) throw new Error("Not logged in.");
+    const base = localStorage.getItem(LS.instanceUrl);
+    const url = new URL(path, base).toString();
+
+    const headers = Object.assign({}, opts.headers || {});
+    headers["Authorization"] = "Bearer " + localStorage.getItem(LS.accessToken);
+    headers["Accept"] = "application/json";
+
+    const resp = await fetch(url, Object.assign({}, opts, { headers }));
+    if (resp.status === 401) {
+      logout();
+      throw new Error("Session expired (401). Click Login.");
+    }
+    const text = await resp.text();
+    let json;
+    try { json = text ? JSON.parse(text) : null; } catch { json = { raw: text }; }
+    if (!resp.ok) {
+      const msg = json && (json[0]?.message || json.message || json.error_description || json.error) ? (json[0]?.message || json.message || json.error_description || json.error) : `Request failed (${resp.status})`;
+      throw new Error(msg);
+    }
+    return json;
+  }
+
+  async function loadOrgContext() {
+    const apiV = getApiVersion();
+    const pills = {
+      orgPill: "Not connected",
+      instancePill: "—",
+      orgIdPill: "—",
+      userPill: "—",
+      apiPill: "v" + apiV,
+      apiMaxPill: "—",
+      buildPill: "2026-02-09.15"
+    };
+
+    const instance = localStorage.getItem(LS.instanceUrl);
+    if (instance) pills.instancePill = instance;
+
+    const setText = (id, val) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = val;
+    };
+
+    Object.entries(pills).forEach(([k,v]) => setText(k, v));
+
+    if (!isLoggedIn()) return;
 
     try {
-      const tok = loadToken();
-      if (!tok) throw new Error("Not logged in.");
+      const me = await sfFetch(`/services/data/v${apiV}/chatter/users/me`);
+      const orgId = me?.organizationId || me?.organization?.id || "—";
+      const user = me?.name || me?.displayName || me?.username || "—";
+      setText("orgPill", "Connected");
+      setText("orgIdPill", orgId);
+      setText("userPill", user);
 
-      const [versions, limits] = await Promise.all([
-        sfFetch("/services/data/"),
-        sfFetch(`/services/data/${apiVersion()}/limits`),
-      ]);
-
-      const out = {
-        build: BUILD,
-        instanceUrl: tok.instanceUrl,
-        apiVersion: apiVersion(),
-        services: versions,
-        limits,
-      };
-
-      pre.textContent = JSON.stringify(out, null, 2);
-
-      const trustSearch = $("trustSearchLink");
-      const trustInstance = $("trustInstanceLink");
-      if (trustSearch) trustSearch.href = "https://status.salesforce.com/";
-      if (trustInstance) trustInstance.href = "https://status.salesforce.com/";
+      const limits = await sfFetch(`/services/data/v${apiV}/limits`);
+      const api = limits?.DailyApiRequests || limits?.DailyApiRequestsMax;
+      if (limits?.DailyApiRequests) {
+        setText("apiMaxPill", `${limits.DailyApiRequests.Max}`);
+      }
     } catch (e) {
-      pushError({ where: "renderOrgDetails", message: e.message });
-      pre.textContent = `Error loading org details: ${e.message || e}`;
+      // Often CORS whitelist not configured. Show actionable banner.
+      setBanner(`Connected, but API calls failed. If you see CORS errors in DevTools, add this origin in Salesforce Setup → CORS: ${location.origin}. Details: ${e.message}`, "warn");
     }
   }
 
-  function renderErrorsDrawer() {
-    const drawer = $("errorsDrawer");
-    const pre = $("errorsPre");
-    if (!drawer || !pre) return;
-    drawer.classList.add("open");
-    const cur = safeJsonParse(localStorage.getItem(LS.lastErrors) || "[]", []);
-    pre.textContent = cur.length ? JSON.stringify(cur, null, 2) : "No errors.";
-  }
-
-  function wireCloseButtons() {
-    document.querySelectorAll(".closeDrawer").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        btn.closest(".drawer")?.classList.remove("open");
-      });
+  function initApiVersionSelect() {
+    const sel = document.getElementById("apiVersionSelect");
+    if (!sel) return;
+    const current = getApiVersion();
+    sel.innerHTML = "";
+    ["40.0","45.0","50.0","55.0","56.0","57.0","58.0","59.0","60.0"].forEach(v => {
+      const o = document.createElement("option");
+      o.value = v;
+      o.textContent = "v" + v;
+      if (v === current) o.selected = true;
+      sel.appendChild(o);
+    });
+    sel.addEventListener("change", () => {
+      localStorage.setItem(LS.apiVersion, sel.value);
+      loadOrgContext();
     });
   }
 
-  // Expose API
-  const api = {
-    BUILD,
-    LS,
-    getClientId,
-    getLoginHost,
-    loadToken,
-    login,
+  async function init() {
+    initApiVersionSelect();
+    renderAuthButtons();
+
+    const loginBtn = document.getElementById("loginBtn");
+    if (loginBtn) loginBtn.addEventListener("click", startLogin);
+
+    const logoutBtn = document.getElementById("logoutBtn");
+    if (logoutBtn) logoutBtn.addEventListener("click", logout);
+
+    const clearBtn = document.getElementById("clearStorageBtn");
+    if (clearBtn) clearBtn.addEventListener("click", () => {
+      if (!confirm("Clear local storage (tokens/settings)?")) return;
+      Object.values(LS).forEach(k => localStorage.removeItem(k));
+      setBanner("Storage cleared.", "ok");
+      renderAuthButtons();
+      loadOrgContext();
+    });
+
+    await completeLoginFromRedirect();
+    await loadOrgContext();
+  }
+
+  window.Auth = {
+    keys: LS,
+    init,
+    isLoggedIn,
+    login: startLogin,
     logout,
-    handleRedirectIfPresent,
     sfFetch,
-    apiVersion,
-    // Backwards-compat alias used by older pages
-    writeApiVersionSelect: ensureApiVersionSelect,
-    renderOrgDetails,
-    renderErrorsDrawer,
-    pushError,
-    setBanner,
+    getApiVersion,
+    getLoginHost,
+    getClientId,
+    canonicalRedirectUri,
+    setBanner
   };
-
-  window.Auth = api;
-
-  // Wiring
-  document.addEventListener("DOMContentLoaded", async () => {
-    try {
-      ensureApiVersionSelect();
-      renderErrorCount();
-      wireCloseButtons();
-
-      await api.handleRedirectIfPresent();
-      showLoginState();
-      await fetchIdentityAndUpdatePills();
-
-      $("loginBtn")?.addEventListener("click", () => api.login());
-      $("logoutBtn")?.addEventListener("click", () => api.logout());
-
-      $("orgDetailsBtn")?.addEventListener("click", () => api.renderOrgDetails());
-      $("refreshOrgDetailsBtn")?.addEventListener("click", () => api.renderOrgDetails());
-
-      $("errorsBtn")?.addEventListener("click", () => api.renderErrorsDrawer());
-      $("clearErrorsBtn")?.addEventListener("click", () => {
-        localStorage.removeItem(LS.lastErrors);
-        renderErrorCount();
-        const pre = $("errorsPre");
-        if (pre) pre.textContent = "No errors.";
-      });
-
-      // If this is a page with a Refresh button, let app.js own the actual refresh; here we just ensure banner.
-      $("clearStorageBtn")?.addEventListener("click", () => {
-        localStorage.clear();
-        renderErrorCount();
-        setBanner("Storage cleared.", "info");
-        showLoginState();
-        fetchIdentityAndUpdatePills();
-      });
-
-      // Set build pill always if present
-      setPill("buildPill", BUILD);
-    } catch (e) {
-      pushError({ where: "auth_init", message: e.message || String(e) });
-      setBanner(`Auth init failed: ${e.message || e}`, "error");
-      // Still try to show build
-      setPill("buildPill", BUILD);
-    }
-  });
-
 })();
