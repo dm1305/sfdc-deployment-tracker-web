@@ -79,7 +79,7 @@
   }
 
   function getClientId() {
-    return localStorage.getItem(LS.clientId) || "";
+    return sessionStorage.getItem(SS.clientId) || localStorage.getItem(LS.clientId) || "";
   }
 
   function getLoginHost() {
@@ -98,6 +98,7 @@
 
   function clearAuth() {
     Object.values(LS).forEach(k => localStorage.removeItem(k));
+    Object.values(SS).forEach(k => sessionStorage.removeItem(k));
     state.identity = null;
   }
 
@@ -195,10 +196,14 @@
   }
 
   function login() {
-    const clientId = getClientId();
+    let clientId = getClientId();
     if (!clientId) {
-      setBanner("Missing Client ID. Set localStorage key 'sfdc_client_id' to your Connected App Consumer Key.", "error");
-      return;
+      clientId = (window.prompt("Paste the Connected App Consumer Key (Client Id). It will be kept for this browser session only:") || "").trim();
+      if (!clientId) {
+        setBanner("Missing Client ID. Provide a Connected App Consumer Key to log in.", "error");
+        return;
+      }
+      sessionStorage.setItem(SS.clientId, clientId);
     }
     const host = getLoginHost();
     const redirectUri = canonicalRedirectUri();
@@ -266,6 +271,14 @@
   window.Auth = {
     keys: LS,
     init,
+    // Back-compat for older pages that expect these names
+    handleRedirectIfPresent: init,
+    loadToken: () => ({
+      access_token: localStorage.getItem(LS.accessToken) || "",
+      instance_url: localStorage.getItem(LS.instanceUrl) || "",
+      id: localStorage.getItem(LS.identityUrl) || "",
+      issued_at: localStorage.getItem(LS.issuedAt) || "",
+    }),
     login,
     logout,
     isLoggedIn,

@@ -1,283 +1,409 @@
-/* auth.js - Salesforce OAuth + common UI wiring (minimal, stable)
-   Build: 2026-02-10.2
-   Notes:
-   - Designed for GitHub Pages (static hosting).
-   - Uses OAuth 2.0 implicit grant (response_type=token).
-   - Stores auth state in localStorage.
-*/
-(function () {
-  const LS = {
-    clientId: "sfdc_client_id",
-    loginHost: "sfdc_login_host",      // login.salesforce.com | test.salesforce.com | custom domain (no scheme)
-    apiVersion: "sfdc_api_version",
-    accessToken: "sfdc_access_token",
-    instanceUrl: "sfdc_instance_url",
-    identityUrl: "sfdc_identity_url",
-    issuedAt: "sfdc_issued_at",
-  };
+/ app.js (INSERT THIS FULL FILE)
+// v2026-02-09.4
+// Notes:
+// - Removes the Deployments date range filter completely (no From/To fields referenced)
+// - Ensures Refresh/Clear/Export/Alerts work
+// - Does not depend on page-specific auth wiring; Auth is handled in auth.js
+// - Keeps deployments table + trend chart working
 
-  const state = {
-    errors: [],
-    bannerTimer: null,
-    identity: null,
-  };
+let trendChart = null;
+let pollTimer = null;
+let inFlight = false;
 
-  function $(id) { return document.getElementById(id); }
+let lastDeployments = [];
+let lastTestRuns = [];
+let deployToTest = new Map();
 
-  function pushError(msg, err) {
-    const detail = err && err.stack ? err.stack : (err && err.message ? err.message : "");
-    const line = detail ? `${msg}\n${detail}` : msg;
-    state.errors.unshift({ t: new Date().toISOString(), msg: line });
-    // Keep bounded
-    if (state.errors.length > 200) state.errors.length = 200;
-    updateErrorsPill();
+function $(id) { return document.getElementById(id); }
+
+function setText(id, text) {
+  const el = $(id);
+  if (el) el.textContent = text;
+}
+
+function log(msg) {
+  const el = $("logPre");
+  if (!el) return;
+  const stamp = new Date().toISOString();
+  el.textContent = `[${stamp}] ${msg}\n` + el.textContent;
+}
+
+function setSelected(objOrText) {
+  const el = $("selectedPre");
+  if (!el) return;
+  el.textContent = typeof objOrText === "string" ? objOrText : JSON.stringify(objOrText, null, 2);
+}
+
+function setBusy(on, label = null) {
+  inFlight = on;
+  const pill = $("busyPill");
+  if (pill) pill.textContent = on ? (label || "Working…") : "Idle";
+
+  // Disable main actions while in-flight
+  ["refreshBtn", "exportCsvBtn", "enableAlertsBtn"].forEach((id) => {
+    const b = $(id);
+    if (b) b.disabled = !!on;
+  });
+}
+
+/* -------------------- Time formatting -------------------- */
+
+function parseDate(s) {
+  if (!s) return null;
+  const d = new Date(s);
+  return Number.isFinite(d.getTime()) ? d : null;
+}
+
+function fmtTime(d) {
+  if (!d) return "—";
+  return d.toISOString().replace("T", " ").replace("Z", "Z");
+}
+
+function fmtDuration(ms) {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
+  const sec = Math.floor(ms / 1000);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return `${h}h ${m}m ${s}s`;
+}
+
+/* -------------------- Status + filters -------------------- */
+
+function statusClass(status) {
+  const s = String(status || "").toLowerCase();
+  if (["succeeded", "success", "completed"].some((k) => s.includes(k))) return "good";
+  if (["failed", "error"].some((k) => s.includes(k))) return "bad";
+  if (["inprogress", "in progress", "queued", "pending", "validat", "running", "processing"].some((k) => s.includes(k)))
+    return "warn";
+  return "";
+}
+
+function passesDeployFilter(r) {
+  const filter = $("deployFilter")?.value || "all";
+  const status = String(r.Status || "");
+  const checkOnly = !!r.CheckOnly;
+
+  if (filter === "active") {
+    const active = ["InProgress", "Pending", "Queued", "Processing", "Running", "Validating"];
+    return active.includes(status);
+  }
+  if (filter === "failed") return status.toLowerCase().includes("fail") || status.toLowerCase().includes("error");
+  if (filter === "checkonly") return checkOnly;
+  if (filter === "real") return !checkOnly;
+  return true;
+}
+
+function passesDeploySearch(r) {
+  const q = ($("deploySearch")?.value || "").trim().toLowerCase();
+  if (!q) return true;
+  const blob = [r.Status, r.Type, r.CreatedBy?.Name, r.ErrorStatusCode, r.ErrorMessage, r.Id].filter(Boolean).join(" ").toLowerCase();
+  return blob.includes(q);
+}
+
+/* -------------------- Correlation badge (optional) -------------------- */
+
+function correlationBadge(c) {
+  if (!c) return `<span class="badge muted">Unknown</span>`;
+  const conf = c.confidence || "Low";
+  const out = c.outcome || "Unknown";
+  const cls =
+    /fail/i.test(out) ? "bad" :
+    /pass|succeed/i.test(out) ? "good" :
+    "warn";
+  return `<span class="badge"><span class="status ${cls}">${out}</span><span class="muted">(${conf})</span></span>`;
+}
+
+/* -------------------- Render: Deployments table -------------------- */
+
+function renderDeploymentsTable(rows) {
+  const tbody = $("deploymentsTbody");
+  if (!tbody) return;
+
+  if (!rows.length) {
+    tbody.innerHTML = `<tr><td class="muted small" colspan="14">No deployments match the current filter/search.</td></tr>`;
+    return;
   }
 
-  function updateErrorsPill() {
-    const btn = $("errorsBtn");
-    if (!btn) return;
-    btn.textContent = `Errors: ${state.errors.length}`;
-  }
+  tbody.innerHTML = rows.map((r) => {
+    const now = new Date();
+    const created = parseDate(r.CreatedDate);
+    const started = parseDate(r.StartDate) || created;
+    const completed = parseDate(r.CompletedDate);
 
-  function showErrorsDialog() {
-    const lines = state.errors.slice(0, 50).map(e => `[${e.t}] ${e.msg}`).join("\n\n");
-    alert(lines || "No errors recorded.");
-  }
+    const queueMs = created && started ? started - created : null;
+    const runMs = started ? (completed ? completed - started : now - started) : null;
+    const totalMs = created ? (completed ? completed - created : now - created) : null;
 
-  function setBanner(text, kind) {
-    const el = $("banner");
-    if (!el) return;
-    el.textContent = text || "";
-    el.className = `banner ${kind || ""}`.trim();
-    el.style.display = text ? "block" : "none";
-    if (state.bannerTimer) clearTimeout(state.bannerTimer);
-    if (text && kind !== "error") {
-      state.bannerTimer = setTimeout(() => { el.style.display = "none"; }, 8000);
-    }
-  }
+    const st = r.Status || "—";
+    const stClass = statusClass(st);
 
-  function safeParseHash(hash) {
-    const h = (hash || "").replace(/^#/, "");
-    const out = {};
-    for (const part of h.split("&")) {
-      if (!part) continue;
-      const [k, v] = part.split("=");
-      out[decodeURIComponent(k)] = decodeURIComponent(v || "");
-    }
-    return out;
-  }
+    const type = r.Type || "—";
+    const user = r.CreatedBy?.Name || "—";
 
-  function canonicalRedirectUri() {
-    // Force index.html so the connected app can be configured deterministically.
-    const url = new URL(window.location.href);
-    const path = url.pathname;
-    const base = path.endsWith("/") ? path : path.substring(0, path.lastIndexOf("/") + 1);
-    url.pathname = base + "index.html";
-    url.search = "";
-    url.hash = "";
-    return url.toString();
-  }
+    const corr = deployToTest.get(r.Id) || null;
+    const testFails = corr?.failures ?? null;
+    const testMs = corr?.durationMs ?? null;
 
-  function getClientId() {
-    return localStorage.getItem(LS.clientId) || "";
-  }
+    return `
+      <tr data-id="${r.Id}">
+        <td class="status ${stClass}">${st}</td>
+        <td>${user}</td>
+        <td>${type}${r.CheckOnly ? ' <span class="muted">(checkOnly)</span>' : ""}</td>
+        <td class="mono">${fmtTime(created)}</td>
+        <td class="mono">${fmtTime(parseDate(r.StartDate))}</td>
+        <td class="mono">${fmtTime(completed)}</td>
+        <td class="mono">${fmtDuration(queueMs)}</td>
+        <td class="mono">${fmtDuration(runMs)}</td>
+        <td class="mono">${fmtDuration(totalMs)}</td>
+        <td>${correlationBadge(corr)}</td>
+        <td class="mono">${testFails ?? "—"}</td>
+        <td class="mono">${testMs != null ? fmtDuration(testMs) : "—"}</td>
+        <td class="mono">${r.Id}</td>
+        <td>
+          <div class="rowActions">
+            <button class="btnSmall" data-action="details" data-id="${r.Id}">Details</button>
+            <button class="btnSmall" data-action="copy" data-text="${r.Id}">Copy id</button>
+          </div>
+        </td>
+      </tr>
+    `.trim();
+  }).join("\n");
 
-  function getLoginHost() {
-    // Stored value is host only (no scheme)
-    const v = (localStorage.getItem(LS.loginHost) || "").trim();
-    return v || "login.salesforce.com";
-  }
-
-  function getApiVersion() {
-    return (localStorage.getItem(LS.apiVersion) || "60.0").trim();
-  }
-
-  function isLoggedIn() {
-    return !!localStorage.getItem(LS.accessToken) && !!localStorage.getItem(LS.instanceUrl);
-  }
-
-  function clearAuth() {
-    Object.values(LS).forEach(k => localStorage.removeItem(k));
-    state.identity = null;
-  }
-
-  async function sfFetch(path, opts) {
-    const token = localStorage.getItem(LS.accessToken);
-    const inst = localStorage.getItem(LS.instanceUrl);
-    if (!token || !inst) throw new Error("Not logged in");
-
-    const url = inst.replace(/\/$/, "") + path;
-    const headers = Object.assign({}, (opts && opts.headers) || {}, {
-      "Authorization": `Bearer ${token}`,
-      "Accept": "application/json",
+  // Row click loads details (except buttons)
+  tbody.querySelectorAll("tr[data-id]").forEach((tr) => {
+    tr.addEventListener("click", async (e) => {
+      if (e.target && e.target.tagName === "BUTTON") return;
+      const id = tr.getAttribute("data-id");
+      if (id) await loadDeployDetails(id);
     });
-    const res = await fetch(url, Object.assign({}, opts || {}, { headers }));
-    if (!res.ok) {
-      const bodyText = await res.text().catch(() => "");
-      const msg = `HTTP ${res.status} ${res.statusText}${bodyText ? " - " + bodyText.slice(0, 300) : ""}`;
-      throw new Error(msg);
-    }
-    const ct = res.headers.get("content-type") || "";
-    if (ct.includes("application/json")) return await res.json();
-    return await res.text();
-  }
+  });
 
-  async function loadIdentity() {
-    const idUrl = localStorage.getItem(LS.identityUrl);
-    const token = localStorage.getItem(LS.accessToken);
-    if (!idUrl || !token) return null;
-    try {
-      const res = await fetch(idUrl, {
-        headers: { "Authorization": `Bearer ${token}`, "Accept": "application/json" }
-      });
-      if (!res.ok) return null;
-      const j = await res.json();
-      state.identity = j;
-      return j;
-    } catch {
-      return null;
-    }
-  }
+  // Button actions
+  tbody.querySelectorAll("button[data-action]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const action = btn.getAttribute("data-action");
+      const id = btn.getAttribute("data-id");
+      const text = btn.getAttribute("data-text");
 
-  function updateHeaderPills() {
-    const orgP = $("orgPill");
-    const instP = $("instPill");
-    const userP = $("userPill");
-    const apiP = $("apiPill");
-    const apiMaxP = $("apiMaxPill");
-    const buildP = $("buildPill");
-
-    const inst = localStorage.getItem(LS.instanceUrl) || "—";
-    const apiV = getApiVersion();
-    if (instP) instP.textContent = inst && inst !== "—" ? inst : "—";
-    if (apiP) apiP.textContent = `v${apiV}`;
-
-    // Fill from identity if possible (Org + user)
-    const id = state.identity;
-    if (orgP) orgP.textContent = id?.organization_id || "—";
-    if (userP) userP.textContent = id?.preferred_username || id?.username || "—";
-
-    // api max is optional
-    if (apiMaxP && window.API_MAX) apiMaxP.textContent = String(window.API_MAX);
-
-    // build pill: allow page to set window.BUILD
-    if (buildP) buildP.textContent = window.BUILD || "—";
-  }
-
-  function wireApiVersionSelect() {
-    const sel = $("apiVersionSelect");
-    if (!sel) return;
-    const versions = ["62.0","61.0","60.0","59.0","58.0","57.0","56.0","55.0"];
-    sel.innerHTML = versions.map(v => `<option value="${v}">v${v}</option>`).join("");
-    sel.value = getApiVersion();
-    sel.addEventListener("change", () => {
-      localStorage.setItem(LS.apiVersion, sel.value);
-      updateHeaderPills();
-      setBanner(`API version set to v${sel.value}`, "ok");
-    });
-  }
-
-  function wireButtons() {
-    $("loginBtn")?.addEventListener("click", login);
-    $("logoutBtn")?.addEventListener("click", () => { logout(); });
-    $("clearStorageBtn")?.addEventListener("click", () => { clearAuth(); window.location.reload(); });
-    $("orgDetailsBtn")?.addEventListener("click", () => {
-      const inst = localStorage.getItem(LS.instanceUrl) || "—";
-      const msg =
-        `Login host: ${getLoginHost()}\n` +
-        `Redirect URI: ${canonicalRedirectUri()}\n` +
-        `Instance: ${inst}\n` +
-        `API: v${getApiVersion()}\n` +
-        `Client Id set: ${getClientId() ? "yes" : "no"}`;
-      alert(msg);
-    });
-    $("errorsBtn")?.addEventListener("click", showErrorsDialog);
-  }
-
-  function login() {
-    const clientId = getClientId();
-    if (!clientId) {
-      setBanner("Missing Client ID. Set localStorage key 'sfdc_client_id' to your Connected App Consumer Key.", "error");
-      return;
-    }
-    const host = getLoginHost();
-    const redirectUri = canonicalRedirectUri();
-    const scope = encodeURIComponent("api id");
-    const url =
-      `https://${host}/services/oauth2/authorize` +
-      `?response_type=token` +
-      `&client_id=${encodeURIComponent(clientId)}` +
-      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&scope=${scope}` +
-      `&prompt=login`;
-    window.location.assign(url);
-  }
-
-  function logout() {
-    clearAuth();
-    updateHeaderPills();
-    setBanner("Logged out (local tokens cleared).", "ok");
-  }
-
-  function handleOAuthCallback() {
-    const h = safeParseHash(window.location.hash);
-    if (h.error) {
-      setBanner(`${h.error}: ${decodeURIComponent(h.error_description || "")}`, "error");
-      pushError(`OAuth error: ${h.error} ${h.error_description || ""}`);
-      // Clear hash
-      history.replaceState(null, "", window.location.pathname + window.location.search);
-      return;
-    }
-    if (!h.access_token) return;
-
-    localStorage.setItem(LS.accessToken, h.access_token);
-    if (h.instance_url) localStorage.setItem(LS.instanceUrl, h.instance_url);
-    if (h.id) localStorage.setItem(LS.identityUrl, h.id);
-    if (h.issued_at) localStorage.setItem(LS.issuedAt, h.issued_at);
-
-    // Clear hash for cleanliness
-    history.replaceState(null, "", canonicalRedirectUri());
-    setBanner("Logged in.", "ok");
-  }
-
-  async function init() {
-    try {
-      handleOAuthCallback();
-      wireApiVersionSelect();
-      wireButtons();
-      updateErrorsPill();
-
-      // Toggle buttons based on auth state
-      const li = $("loginBtn");
-      const lo = $("logoutBtn");
-      if (li) li.style.display = isLoggedIn() ? "none" : "inline-block";
-      if (lo) lo.style.display = isLoggedIn() ? "inline-block" : "none";
-
-      if (isLoggedIn()) {
-        await loadIdentity();
+      if (action === "details" && id) {
+        await loadDeployDetails(id);
+        return;
       }
-      updateHeaderPills();
-    } catch (e) {
-      pushError("Auth init failed.", e);
-      setBanner(`Auth init failed: ${e.message}`, "error");
+
+      if (action === "copy") {
+        try {
+          await navigator.clipboard.writeText(text || "");
+          log("Copied to clipboard.");
+        } catch {
+          log("Clipboard copy failed (browser permissions).");
+        }
+      }
+    });
+  });
+}
+
+/* -------------------- Trend chart -------------------- */
+
+function updateTrendChart(records) {
+  const canvas = $("trendChart");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+
+  const chartData = [...records]
+    .reverse()
+    .filter(r => r.CompletedDate)
+    .map(r => ({
+      t: new Date(r.CreatedDate).toLocaleTimeString(),
+      y: (new Date(r.CompletedDate) - new Date(r.CreatedDate)) / 1000
+    }));
+
+  if (trendChart) trendChart.destroy();
+  trendChart = new Chart(ctx, {
+    type: "line",
+    data: {
+      labels: chartData.map(d => d.t),
+      datasets: [{ label: "Duration (sec)", data: chartData.map(d => d.y), fill: false }]
+    },
+    options: {
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } }
     }
+  });
+}
+
+/* -------------------- Salesforce fetches -------------------- */
+
+async function fetchDeployments() {
+  const limit = Number($("deployLimit")?.value || 20);
+
+  const soql = `
+    SELECT Id, Status, Type, CheckOnly,
+           CreatedDate, StartDate, CompletedDate,
+           CreatedBy.Name, CreatedById,
+           ErrorStatusCode, ErrorMessage
+    FROM DeployRequest
+    ORDER BY CreatedDate DESC
+    LIMIT ${limit}
+  `.trim();
+
+  setBusy(true, "Deploys…");
+  const { ok, status, json } = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
+  setBusy(false);
+
+  if (!ok) {
+    setSelected(`DeployRequest query failed (HTTP ${status}). Check Errors drawer.`);
+    return [];
   }
 
-  window.Auth = {
-    keys: LS,
-    init,
-    login,
-    logout,
-    isLoggedIn,
-    getClientId,
-    getLoginHost,
-    getApiVersion,
-    canonicalRedirectUri,
-    sfFetch,
-    setBanner,
-    wireApiVersionSelect,
-    // Back-compat aliases used across pages
-    showBanner: setBanner,
-    getState: () => ({ identity: state.identity, errors: state.errors.slice() }),
-  };
-})();
+  const recs = json?.records || [];
+  lastDeployments = recs;
+
+  const filtered = recs.filter(passesDeployFilter).filter(passesDeploySearch);
+  renderDeploymentsTable(filtered);
+  updateTrendChart(filtered);
+
+  // Active count pill
+  const activeStatuses = new Set(["InProgress", "Queued", "Pending", "Processing", "Running", "Validating"]);
+  const active = filtered.filter(r => activeStatuses.has(r.Status)).length;
+  setText("activeCountPill", `Active: ${active}`);
+
+  return filtered;
+}
+
+async function loadDeployDetails(id) {
+  setSelected({ kind: "DeployRequest", Id: id, loading: true });
+
+  const panel = $("deployDetailsPanel");
+  if (panel) panel.textContent = "Loading deploy details…";
+
+  // NOTE: Component-level detail requires Metadata API deployStatus (SOAP) or proxy.
+  // This is a stable detail view from Tooling DeployRequest.
+  const soql = `
+    SELECT Id, Status, Type, CheckOnly,
+           CreatedDate, StartDate, CompletedDate,
+           ErrorStatusCode, ErrorMessage
+    FROM DeployRequest
+    WHERE Id='${id}'
+    LIMIT 1
+  `.trim();
+
+  setBusy(true, "Details…");
+  const { ok, status, json } = await Auth.sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
+  setBusy(false);
+
+  if (!ok) {
+    if (panel) panel.textContent = "Failed to load deploy details. Check Errors drawer.";
+    setSelected(`Deploy detail query failed (HTTP ${status}).`);
+    return;
+  }
+
+  const rec = json?.records?.[0];
+  if (!rec) {
+    if (panel) panel.textContent = "No details returned.";
+    return;
+  }
+
+  setSelected(rec);
+  if (panel) panel.textContent = "Loaded (Tooling DeployRequest). Component totals require Metadata deployStatus.";
+}
+
+/* -------------------- CSV export -------------------- */
+
+function exportCsv() {
+  const rows = [["Id", "Status", "Type", "CheckOnly", "CreatedDate", "StartDate", "CompletedDate", "ErrorStatusCode", "ErrorMessage"]];
+  (lastDeployments || []).forEach(r => rows.push([
+    r.Id, r.Status, r.Type, r.CheckOnly, r.CreatedDate, r.StartDate, r.CompletedDate, r.ErrorStatusCode, r.ErrorMessage
+  ]));
+
+  const csv = rows.map(r => r.map(v => {
+    const s = (v == null) ? "" : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }).join(",")).join("\n");
+
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `deployments_${new Date().toISOString().replace(/[:.]/g, "-")}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+/* -------------------- Notifications -------------------- */
+
+function requestNotifyPermission() {
+  if (!("Notification" in window)) {
+    alert("Notifications not supported by this browser.");
+    return;
+  }
+  Notification.requestPermission().then((p) => {
+    if (p === "granted") log("Notifications enabled.");
+    else log("Notifications permission not granted.");
+  });
+}
+
+/* -------------------- Polling -------------------- */
+
+function startPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+
+  const seconds = Number($("pollInterval")?.value || 0);
+  if (!seconds) {
+    log("Auto-refresh disabled.");
+    return;
+  }
+
+  pollTimer = setInterval(async () => {
+    if (inFlight) return;
+    await refreshActiveTab(true);
+  }, seconds * 1000);
+
+  log(`Auto-refresh enabled: every ${seconds}s`);
+}
+
+async function refreshActiveTab(isPoll = false) {
+  await fetchDeployments();
+  setText("lastRefreshed", `Last refreshed: ${new Date().toISOString().replace("T", " ").replace("Z", "Z")}`);
+}
+
+/* -------------------- Page init + wiring -------------------- */
+
+document.addEventListener("DOMContentLoaded", async () => {
+  // Handle OAuth callback (if we just returned from login)
+  await Auth.handleRedirectIfPresent();
+
+  // Wire buttons
+  $("refreshBtn")?.addEventListener("click", () => refreshActiveTab(false));
+  $("clearStorageBtn")?.addEventListener("click", () => {
+    localStorage.clear();
+    sessionStorage.clear();
+    location.reload();
+  });
+
+  $("exportCsvBtn")?.addEventListener("click", exportCsv);
+  $("enableAlertsBtn")?.addEventListener("click", requestNotifyPermission);
+
+  // Wire deployment controls
+  $("pollInterval")?.addEventListener("change", startPolling);
+  $("deployFilter")?.addEventListener("change", () => fetchDeployments());
+  $("deployLimit")?.addEventListener("change", () => fetchDeployments());
+  $("deploySearch")?.addEventListener("input", () => {
+    const filtered = (lastDeployments || []).filter(passesDeployFilter).filter(passesDeploySearch);
+    renderDeploymentsTable(filtered);
+    updateTrendChart(filtered);
+  });
+
+  // Initial load if logged in
+  const token = Auth.loadToken();
+  if (token?.access_token) {
+    await Auth.loadOrgContext(true);
+    await fetchDeployments();
+    startPolling();
+  } else {
+    Auth.showBanner("Not logged in. Click Login.");
+  }
+});
