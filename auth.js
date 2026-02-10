@@ -198,7 +198,7 @@
   function login() {
     let clientId = getClientId();
     if (!clientId) {
-      clientId = (window.prompt("Paste the Connected App Consumer Key (Client Id). It will be kept for this browser session only:") || "").trim();
+      clientId = (window.prompt("3MVG9YFqzc_KnL.wada6.pbgp4zDPc8T6u6uR6srOVo1fS7XOD_kHsrDH_QurZzXeEgwzWBU365_xXQ54mMNn") || "").trim();
       if (!clientId) {
         setBanner("Missing Client ID. Provide a Connected App Consumer Key to log in.", "error");
         return;
