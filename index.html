@@ -1,230 +1,411 @@
-<!-- index.html (FULL FILE - UPDATED) -->
 <!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>SFDC Deployment Tracker (Web)</title>
-  <meta name="color-scheme" content="dark light" />
-  <link rel="stylesheet" href="./styles.css?v=2026-02-09.6" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root{
+      --bg:#0b1220;
+      --panel:#0f1b2e;
+      --panel2:#0c1728;
+      --text:#e7edf7;
+      --muted:#a9b7cc;
+      --line:rgba(255,255,255,.08);
+      --good:#35d07f;
+      --bad:#ff5c6c;
+      --warn:#ffcc66;
+      --accent:#7aa2ff;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0; padding:24px;
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+      color:var(--text);
+      background: radial-gradient(1200px 700px at 15% 10%, rgba(122,162,255,.25), transparent 60%),
+                  radial-gradient(900px 600px at 80% 10%, rgba(53,208,127,.18), transparent 55%),
+                  linear-gradient(180deg, #07101d, var(--bg));
+    }
+    .shell{
+      max-width: 1400px;
+      margin: 0 auto;
+      display:flex;
+      flex-direction:column;
+      gap:14px;
+    }
+    .topbar{
+      display:flex;
+      gap:12px;
+      align-items:flex-start;
+      justify-content:space-between;
+      padding:18px 18px;
+      border:1px solid var(--line);
+      background: linear-gradient(135deg, rgba(255,255,255,.06), rgba(255,255,255,.02));
+      border-radius: 16px;
+    }
+    .title{
+      display:flex;
+      flex-direction:column;
+      gap:8px;
+    }
+    h1{margin:0; font-size:22px; letter-spacing:.2px}
+    .pills{display:flex; gap:8px; flex-wrap:wrap}
+    .pill{
+      border:1px solid var(--line);
+      background: rgba(0,0,0,.22);
+      padding:6px 10px;
+      border-radius: 999px;
+      color:var(--muted);
+      font-size:13px;
+      max-width: 700px;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+    .actions{display:flex; gap:10px; flex-wrap:wrap; align-items:center}
+    button, select, input{
+      border:1px solid var(--line);
+      background: rgba(0,0,0,.18);
+      color: var(--text);
+      padding: 8px 12px;
+      border-radius: 10px;
+      font-size: 13px;
+      outline:none;
+    }
+    button{cursor:pointer}
+    button:hover{border-color: rgba(122,162,255,.45)}
+    button:disabled{opacity:.5; cursor:not-allowed}
+    input{min-width: 280px}
+    .tabs{display:flex; gap:8px; flex-wrap:wrap}
+    .tab{
+      border:1px solid var(--line);
+      background: rgba(0,0,0,.16);
+      padding:8px 12px;
+      border-radius: 12px;
+      cursor:pointer;
+      user-select:none;
+      font-size:13px;
+      color: var(--muted);
+    }
+    .tab.active{
+      color: var(--text);
+      border-color: rgba(122,162,255,.45);
+      background: rgba(122,162,255,.10);
+    }
+    .controls{
+      border:1px solid var(--line);
+      background: rgba(0,0,0,.14);
+      border-radius: 14px;
+      padding: 12px;
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      align-items:center;
+    }
+    .grid{
+      display:grid;
+      grid-template-columns: 1fr 420px;
+      gap:14px;
+      align-items:start;
+    }
+    .card{
+      border:1px solid var(--line);
+      background: rgba(0,0,0,.14);
+      border-radius: 16px;
+      overflow:hidden;
+    }
+    .card h2{
+      margin:0;
+      padding: 12px 14px;
+      font-size: 14px;
+      color: var(--text);
+      border-bottom:1px solid var(--line);
+      background: rgba(255,255,255,.03);
+      display:flex; justify-content:space-between; align-items:center;
+    }
+    .card .body{padding: 12px 14px}
+    .split{
+      display:flex; flex-direction:column; gap:10px;
+    }
+    table{
+      width:100%;
+      border-collapse:collapse;
+      font-size: 13px;
+    }
+    thead th{
+      text-align:left;
+      color: var(--muted);
+      font-weight:600;
+      padding: 10px 10px;
+      border-bottom:1px solid var(--line);
+      position: sticky;
+      top: 0;
+      background: rgba(15,27,46,.92);
+      backdrop-filter: blur(8px);
+    }
+    tbody td{
+      padding: 10px 10px;
+      border-bottom:1px solid var(--line);
+      vertical-align: top;
+    }
+    tbody tr:hover{background: rgba(122,162,255,.06)}
+    .mono{font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}
+    .status.good{color:var(--good)}
+    .status.bad{color:var(--bad)}
+    .status.warn{color:var(--warn)}
+    .small{font-size:12px}
+    .muted{color:var(--muted)}
+    .kpi{
+      display:flex; gap:10px; flex-wrap:wrap;
+      margin-bottom:8px;
+    }
+    .kpi .chip{
+      border:1px solid var(--line);
+      background: rgba(0,0,0,.18);
+      border-radius: 12px;
+      padding: 8px 10px;
+      min-width: 120px;
+    }
+    .kpi .chip .label{font-size:11px; color:var(--muted)}
+    .kpi .chip .value{font-size:14px; margin-top:2px}
+    pre{
+      margin:0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      line-height: 1.35;
+      background: rgba(0,0,0,.22);
+      border:1px solid var(--line);
+      border-radius: 14px;
+      padding: 10px;
+      max-height: 260px;
+      overflow:auto;
+      font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
+    }
+    .badge{
+      border:1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 12px;
+      color: var(--muted);
+      background: rgba(0,0,0,.18);
+    }
+    .footer-note{font-size:12px; color:var(--muted); margin-top:8px}
+    @media (max-width: 1100px){
+      .grid{grid-template-columns:1fr}
+    }
+  </style>
 </head>
-
 <body>
-  <div class="app">
-
-    <!-- TOP BAR -->
+  <div class="shell">
     <div class="topbar">
       <div class="title">
         <h1>SFDC Deployment Tracker (Web)</h1>
         <div class="pills">
-          <div class="pill">Org: <code id="orgPill">Not connected</code></div>
-          <div class="pill">Instance: <code id="instancePill">—</code></div>
-          <div class="pill">Org Id: <code id="orgIdPill">—</code></div>
-          <div class="pill">User: <code id="userPill">—</code></div>
-          <div class="pill">API: <code id="apiPill">—</code></div>
-          <div class="pill">API max: <code id="apiMaxPill">—</code></div>
-          <div class="pill">Build: <code id="buildPill">—</code></div>
+          <div class="pill mono" id="orgPill" title="Salesforce instance_url from your OAuth token.">Org: Not connected</div>
+          <div class="pill mono" id="apiPill" title="REST/Tooling API version used for calls.">API: —</div>
+          <div class="pill mono" id="buildPill" title="Build identifier of this static site (derived from app.js hash).">Build: —</div>
         </div>
       </div>
-
       <div class="actions">
-        <select id="apiVersionSelect" title="API version"></select>
-
-        <!-- Auth buttons: visibility controlled by auth.js -->
-        <button id="loginBtn">Login</button>
-        <button id="logoutBtn">Logout</button>
-
-        <button id="refreshBtn">Refresh</button>
-        <button id="clearStorageBtn">Clear storage</button>
-        <button id="orgDetailsBtn">Org details</button>
-        <button id="errorsBtn">Errors: <span id="errorCount">0</span></button>
+        <button id="loginBtn" title="Start OAuth login (Authorization Code + PKCE).">Login</button>
+        <button id="logoutBtn" title="Forget stored token (localStorage) and stop polling.">Logout</button>
+        <button id="refreshBtn" title="Refresh the currently selected tab.">Refresh</button>
+        <button id="clearStorageBtn" title="Remove sf_token (localStorage) and PKCE keys (sessionStorage), then reload.">Clear storage</button>
       </div>
     </div>
 
-    <div id="authBanner" class="banner"></div>
-
-    <!-- NAV -->
     <div class="tabs">
-      <div class="tab active" id="tabDeployments">Deployments</div>
-      <div class="tab" id="tabApexTests">Apex tests</div>
-      <div class="tab" id="tabPackages">Packages</div>
-      <a class="tab" href="./inventory.html">Metadata inventory</a>
-      <a class="tab" href="./workbench.html">Workbench tester</a>
+      <div class="tab active" id="tabDeployments" title="Tooling API DeployRequest timeline + status + heuristics.">Deployments</div>
+      <div class="tab" id="tabApexTests" title="Recent Apex test runs + correlation to selected deployment.">Apex tests</div>
+      <div class="tab" id="tabPackages" title="Installed managed packages and versions.">Packages</div>
+      <div class="tab" id="tabPackageHistory" title="Discovery of objects that might represent package install history.">Package install history</div>
+      <div class="tab" id="tabDeployDetails" title="Drill-down into selected deployment; shows extra metrics and error taxonomy.">Deploy details</div>
     </div>
 
-    <!-- CONTROLS: DEPLOYMENTS -->
+    <!-- DEPLOYMENTS CONTROLS -->
     <div class="controls" id="deploymentsControls">
-      <span class="label">Auto-refresh</span>
-      <select id="pollInterval" title="How often to auto-refresh. 0 disables polling.">
+      <span class="muted small" title="If enabled, periodically refreshes the deployments list.">Auto-refresh</span>
+      <select id="pollInterval" title="Polling interval for auto-refresh; 0 disables.">
         <option value="0">Off</option>
         <option value="10">10s</option>
         <option value="30" selected>30s</option>
         <option value="60">60s</option>
       </select>
 
-      <span class="label">Show</span>
-      <select id="deployFilter" title="Filter deployments by status or checkOnly">
+      <span class="muted small" title="Filter deployments by status.">Show</span>
+      <select id="deployFilter" title="All = everything; Active = in progress; Failed = failed/error; Check-only = validation; Real = actual deployment.">
         <option value="all" selected>All</option>
         <option value="active">Active</option>
         <option value="failed">Failed</option>
-        <option value="checkonly">Validations (checkOnly)</option>
-        <option value="real">Real deploys</option>
+        <option value="checkonly">Check-only</option>
+        <option value="real">Real</option>
       </select>
 
-      <span class="label">Limit</span>
-      <select id="deployLimit" title="How many DeployRequest rows to query">
-        <option>10</option>
-        <option selected>20</option>
-        <option>50</option>
-        <option>100</option>
+      <span class="muted small" title="Maximum number of deployments queried from Tooling API.">Limit</span>
+      <select id="deployLimit" title="SOQL LIMIT for DeployRequest query.">
+        <option value="10">10</option>
+        <option value="20" selected>20</option>
+        <option value="50">50</option>
+        <option value="100">100</option>
       </select>
 
-      <input id="deploySearch" placeholder="Search status/type/user/id/error…" title="Client-side search across fetched rows" style="min-width: 320px;" />
-
-      <!-- DATE RANGE FILTER REMOVED per request -->
-
-      <button id="exportCsvBtn" title="Export current rows to CSV">Export CSV</button>
-      <button id="enableAlertsBtn" title="Enable browser notifications">Enable alerts</button>
-
-      <span class="muted small" id="activeCountPill" style="margin-left:auto;">Active: —</span>
+      <input id="deploySearch" placeholder="Search status/type/user/id/error..." title="Client-side search across status/type/user/error/id." />
+      <span class="muted small" id="lastRefreshedLabel">Last refreshed: —</span>
+      <span class="muted small" id="lastRequestLabel">Last request: —</span>
     </div>
 
-    <!-- CONTROLS: APEX TESTS -->
-    <div class="controls" id="apexTestsControls" style="display:none;">
-      <span class="label">Limit</span>
-      <select id="testLimit" title="How many ApexTestRun rows to fetch">
-        <option>10</option>
-        <option selected>20</option>
-        <option>50</option>
-        <option>100</option>
+    <!-- APEX TESTS CONTROLS -->
+    <div class="controls" id="apexTestsControls" style="display:none">
+      <span class="muted small" title="How many ApexTestRun rows to query.">Limit</span>
+      <select id="testsLimit" title="SOQL LIMIT for ApexTestRun query.">
+        <option value="20" selected>20</option>
+        <option value="50">50</option>
+        <option value="100">100</option>
       </select>
-
-      <span class="label">Show</span>
-      <select id="testFilter" title="Filter test runs by outcome">
+      <span class="muted small" title="Filter recent test runs by outcome.">Show</span>
+      <select id="testsFilter" title="Filter by outcome / status.">
         <option value="all" selected>All</option>
-        <option value="failed">Failed only</option>
-        <option value="passed">Passed only</option>
+        <option value="failed">Failed</option>
+        <option value="completed">Completed</option>
+        <option value="running">Running</option>
       </select>
-
-      <input id="testSearch" placeholder="Search user/status/run id…" title="Client-side search across test runs" style="min-width: 320px;" />
-      <button id="refreshTestsBtn" title="Refresh test runs now">Refresh tests</button>
+      <input id="testsSearch" placeholder="Search method/status/user/id..." title="Client-side search over ApexTestRun fields shown." />
+      <span class="muted small" id="testsHint">Tip: Select a deployment to see correlated test runs.</span>
     </div>
 
-    <!-- CONTROLS: PACKAGES -->
-    <div class="controls" id="packagesControls" style="display:none;">
-      <input id="pkgSearch" placeholder="Search package name/namespace…" title="Search packages client-side" style="min-width: 320px;" />
-      <button id="refreshPackagesBtn" title="Refresh installed packages inventory">Refresh packages</button>
+    <!-- PACKAGES CONTROLS -->
+    <div class="controls" id="packagesControls" style="display:none">
+      <input id="pkgSearch" placeholder="Search package name/namespace..." title="Client-side search over installed packages." />
+      <button id="refreshPackagesBtn" title="Query InstalledSubscriberPackage via Tooling API.">Refresh packages</button>
     </div>
 
-    <div class="layout">
-      <!-- LEFT: RESULTS -->
+    <!-- PACKAGE HISTORY CONTROLS -->
+    <div class="controls" id="packageHistoryControls" style="display:none">
+      <button id="discoverHistoryBtn" title="List sObjects and suggest candidates related to package install history.">Discover objects</button>
+      <button id="refreshHistoryBtn" title="Placeholder. Implement once you choose an object to query.">Refresh</button>
+    </div>
+
+    <!-- DEPLOY DETAILS CONTROLS -->
+    <div class="controls" id="deployDetailsControls" style="display:none">
+      <span class="muted small" title="The selected deployment (DeployRequest.Id) drives the details panel.">Selected:</span>
+      <span class="mono" id="selectedDeployId">—</span>
+      <button id="reFetchSelectedBtn" title="Re-fetch details for the selected deployment.">Re-fetch details</button>
+    </div>
+
+    <div class="grid">
       <div class="card">
-        <div class="cardHeader">
-          <div class="h" id="resultsTitle">Results (Deployments)</div>
-          <div class="meta">
-            <span id="lastRefreshed" class="muted">Last refreshed: —</span>
-            <span id="lastRequest" class="muted">Last request: —</span>
-          </div>
-        </div>
-
-        <div class="cardBody" style="padding:0;">
-          <div style="padding:12px;">
-            <div class="h" style="margin-bottom:8px;">Duration trend</div>
-            <canvas id="trendChart" height="120"></canvas>
-            <div class="hint">Uses completed deployments in the current result set.</div>
-          </div>
-
-          <div style="max-height: 720px; overflow:auto;">
+        <h2>
+          <span>Results</span>
+          <span class="badge" id="resultsBadge" title="Rows currently shown after filters/search.">—</span>
+        </h2>
+        <div class="body">
+          <div id="deploymentsPanel">
             <table>
               <thead>
                 <tr>
-                  <th title="DeployRequest.Status">Status</th>
-                  <th title="DeployRequest.CreatedBy.Name">User</th>
-                  <th title="DeployRequest.Type + checkOnly">Type</th>
-                  <th title="DeployRequest.CreatedDate">Created</th>
-                  <th title="DeployRequest.StartDate">Started</th>
-                  <th title="DeployRequest.CompletedDate">Completed</th>
-                  <th title="Queue time = StartDate - CreatedDate">Queue time</th>
-                  <th title="Run time = CompletedDate - StartDate">Run time</th>
-                  <th title="Total time = CompletedDate - CreatedDate">Total time</th>
-                  <th title="Correlation to an ApexTestRun near this deploy">Tests</th>
-                  <th title="Failures for correlated run">Test fails</th>
-                  <th title="Duration for correlated run">Test time</th>
-                  <th title="DeployRequest.Id">Id</th>
-                  <th>Actions</th>
+                  <th title="DeployRequest.Status (succeeded/failed/in progress).">Status</th>
+                  <th title="DeployRequest.CreatedBy.Name (who initiated the deployment/validation).">User</th>
+                  <th title="DeployRequest.Type + CheckOnly (validation vs real deploy).">Type</th>
+                  <th title="CreatedDate (request created).">Created</th>
+                  <th title="StartDate (work started).">Started</th>
+                  <th title="CompletedDate (finished).">Completed</th>
+                  <th title="Queue time ≈ StartDate - CreatedDate. Large values often indicate contention (another deploy running) or async backlog.">Queue</th>
+                  <th title="Run time ≈ CompletedDate - StartDate (or 'now - StartDate' if still running). This is where tests and compilation live.">Run</th>
+                  <th title="Total time ≈ CompletedDate - CreatedDate (or 'now - CreatedDate').">Total</th>
+                  <th title="Heuristic: correlated tests near the deployment window (count/failures/duration).">Tests</th>
+                  <th title="Which phase dominated: queue vs run (largest segment).">Bottleneck</th>
+                  <th title="DeployRequest.Id (copyable).">Id</th>
                 </tr>
               </thead>
               <tbody id="deploymentsTbody">
-                <tr><td colspan="14" class="muted small">Not loaded.</td></tr>
+                <tr><td class="muted small" colspan="12">Ready.</td></tr>
+              </tbody>
+            </table>
+            <div class="footer-note">
+              Click a row to load details and correlate Apex tests. Metrics are derived from Tooling API fields when present; some orgs expose fewer fields.
+            </div>
+          </div>
+
+          <div id="apexTestsPanel" style="display:none">
+            <table>
+              <thead>
+                <tr>
+                  <th title="ApexTestRun.Status (Completed/Failed/Running).">Status</th>
+                  <th title="ApexTestRun.TestRunResult (high-level outcome).">Outcome</th>
+                  <th title="ApexTestRun.StartTime.">Started</th>
+                  <th title="ApexTestRun.EndTime.">Ended</th>
+                  <th title="Duration = End - Start (or now - Start if running).">Duration</th>
+                  <th title="ApexTestRun.UserId (attempt to resolve to name if possible).">User</th>
+                  <th title="ApexTestRun.ClassesCompleted/MethodsCompleted when available.">Completed</th>
+                  <th title="ApexTestRun.ClassesFailed/MethodsFailed when available.">Failed</th>
+                  <th title="ApexTestRun.Id.">Id</th>
+                </tr>
+              </thead>
+              <tbody id="apexTestsTbody">
+                <tr><td class="muted small" colspan="9">Use Refresh to load test runs.</td></tr>
+              </tbody>
+            </table>
+            <div class="footer-note" id="correlationNote">
+              Correlation heuristic: test runs overlapping (or shortly after) the selected deployment window.
+            </div>
+          </div>
+
+          <div id="packagesPanel" style="display:none">
+            <table>
+              <thead>
+                <tr>
+                  <th title="SubscriberPackage.Name.">Package</th>
+                  <th title="NamespacePrefix (managed package namespace).">Namespace</th>
+                  <th title="Installed version = Major.Minor.Patch.Build.">Version</th>
+                </tr>
+              </thead>
+              <tbody id="packagesTbody">
+                <tr><td class="muted small" colspan="3">Use Refresh packages.</td></tr>
               </tbody>
             </table>
           </div>
+
+          <div id="packageHistoryPanel" style="display:none">
+            <pre id="packageHistoryPre">Use Discover objects.</pre>
+          </div>
+
+          <div id="deployDetailsPanel" style="display:none">
+            <div class="kpi" id="detailsKpis"></div>
+            <pre id="deployDetailsPre">Select a deployment to see details.</pre>
+            <div class="footer-note" id="insightsNote">
+              Insights: delay category and recurring failure patterns are best-effort heuristics based on available fields and messages.
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- RIGHT: DETAILS -->
-      <div class="card">
-        <div class="cardHeader">
-          <div class="h">Details / Insights / Log</div>
-          <div class="meta">
-            <span id="busyPill" class="badge">Idle</span>
+      <div class="split">
+        <div class="card">
+          <h2>
+            <span>Selected / Log</span>
+            <span class="badge" id="stateBadge" title="Current app state.">Idle</span>
+          </h2>
+          <div class="body">
+            <pre id="selectedPre">Nothing selected.</pre>
+            <div style="height:10px"></div>
+            <pre id="logPre">Ready.</pre>
           </div>
         </div>
-        <div class="cardBody">
-          <pre id="selectedPre" class="rightPre" style="min-height: 140px;">Nothing selected.</pre>
 
-          <h4>Deployment details (row-click)</h4>
-          <div id="deployDetailsPanel" class="hint">Select a deployment row to load details.</div>
-
-          <h4>Bottleneck insights</h4>
-          <div id="insightsPanel" class="hint">—</div>
-
-          <h4>Test heatmap (slowest Apex classes)</h4>
-          <div class="hint">
-            Aggregated from ApexTestResult runtimes for the correlated test run (if found).
-            Flags tests ≥ 8000ms as CPU timeout risk.
+        <div class="card">
+          <h2>
+            <span>Insights</span>
+            <span class="badge" id="insightsBadge" title="Derived from the current deployments table (post-filter).">—</span>
+          </h2>
+          <div class="body">
+            <pre id="insightsPre">Load deployments to see insights.</pre>
           </div>
-          <canvas id="heatmapChart" height="160"></canvas>
-
-          <h4>Side-by-side compare</h4>
-          <div class="row">
-            <input id="compareIdA" placeholder="Deploy Id A" />
-            <input id="compareIdB" placeholder="Deploy Id B" />
-            <button id="compareBtn">Compare</button>
-          </div>
-
-          <h4>Log</h4>
-          <pre id="logPre" class="rightPre">Ready.</pre>
         </div>
       </div>
     </div>
-
-    <!-- ORG DRAWER -->
-    <div id="orgDetailsDrawer" class="drawer">
-      <h3>Org details</h3>
-      <pre id="orgDetailsPre">Loading…</pre>
-      <div class="row">
-        <a id="trustSearchLink" target="_blank">Trust (search)</a>
-        <a id="trustInstanceLink" target="_blank">Trust (instance)</a>
-        <button id="refreshOrgDetailsBtn">Refresh</button>
-        <button class="closeDrawer">Close</button>
-      </div>
-    </div>
-
-    <!-- ERRORS DRAWER -->
-    <div id="errorsDrawer" class="drawer">
-      <h3>Errors</h3>
-      <pre id="errorsPre">No errors.</pre>
-      <div class="row">
-        <button id="clearErrorsBtn">Clear</button>
-        <button class="closeDrawer">Close</button>
-      </div>
-    </div>
-
   </div>
 
-  <script src="./auth.js?v=2026-02-09.6"></script>
-  <script src="./app.js?v=2026-02-09.6"></script>
+  <script src="app.js"></script>
 </body>
 </html>
