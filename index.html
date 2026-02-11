@@ -3,177 +3,48 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>SFDC Deployment Tracker (Web)</title>
+  <title>SFDC Deployment Tracker</title>
   <style>
-    :root{
-      --bg:#0b0f14; --panel:#0f1620; --panel2:#0c131c; --text:#e6edf3; --muted:#9aa7b2;
-      --border:#233041; --accent:#4aa3ff; --good:#2ea043; --warn:#d29922; --bad:#f85149;
-    }
-    *{ box-sizing:border-box; }
-    body{ margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); }
-    header{ padding:16px 18px; border-bottom:1px solid var(--border); background:linear-gradient(180deg,#0c121a, #0b0f14); position:sticky; top:0; z-index:10;}
-    h1{ font-size:18px; margin:0 0 8px; font-weight:650; letter-spacing:.2px;}
-    .topbar{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between;}
-    .left, .right{ display:flex; flex-wrap:wrap; gap:8px; align-items:center;}
-    .pill{ padding:6px 10px; border:1px solid var(--border); border-radius:999px; color:var(--muted); background:rgba(255,255,255,.02); font-size:12px;}
-    .pill strong{ color:var(--text); font-weight:600;}
-    main{ padding:16px 18px; display:grid; grid-template-columns: 1fr; gap:12px;}
-    .card{ background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:12px; }
-    .row{ display:flex; flex-wrap:wrap; gap:8px; align-items:center;}
-    button, select, input{ border:1px solid var(--border); background:rgba(255,255,255,.03); color:var(--text); border-radius:10px; padding:9px 10px; font-size:13px; }
-    button{ cursor:pointer; }
-    button.primary{ border-color:rgba(74,163,255,.6); }
-    button:hover{ background:rgba(255,255,255,.06); }
-    input{ min-width:260px; }
-    select{ min-width:220px; }
-    .tabs{ display:flex; gap:6px; flex-wrap:wrap; }
-    .tab{ padding:8px 10px; border-radius:12px; border:1px solid var(--border); background:rgba(255,255,255,.02); cursor:pointer; font-size:13px; color:var(--muted);}
-    .tab.active{ color:var(--text); border-color:rgba(74,163,255,.55); background:rgba(74,163,255,.08); }
-    .grid{ display:grid; grid-template-columns: 1.3fr .9fr; gap:12px; }
-    @media (max-width: 980px){ .grid{ grid-template-columns:1fr; } input{ min-width: 100%; } select{ min-width: 100%; } }
-    table{ width:100%; border-collapse:separate; border-spacing:0; overflow:hidden; border-radius:12px; border:1px solid var(--border); }
-    thead th{ text-align:left; font-size:12px; font-weight:600; color:var(--muted); background:var(--panel2); padding:10px; border-bottom:1px solid var(--border); }
-    tbody td{ padding:10px; border-bottom:1px solid rgba(35,48,65,.55); font-size:13px; vertical-align:top; }
-    tbody tr:hover td{ background:rgba(255,255,255,.02); }
-    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px; color:var(--muted); }
-    .muted{ color:var(--muted); }
-    .status.good{ color:var(--good); }
-    .status.warn{ color:var(--warn); }
-    .status.bad{ color:var(--bad); }
-    pre{ margin:0; padding:12px; border-radius:14px; border:1px solid var(--border); background:#070a10; color:var(--text); overflow:auto; min-height:140px; white-space:pre-wrap; word-break:break-word;}
-    .small{ font-size:12px; }
-    .hint{ color:var(--muted); font-size:12px; line-height:1.45; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; margin: 24px; }
+    h1 { margin-bottom: 8px; }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    button { padding: 6px 12px; cursor: pointer; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #ccc; padding: 6px; font-size: 13px; }
+    th { background: #f5f5f5; }
+    .mono { font-family: monospace; }
+    pre { background: #111; color: #eee; padding: 12px; border-radius: 6px; overflow: auto; }
   </style>
 </head>
 <body>
-  <header>
-    <h1>SFDC Deployment Tracker (Web)</h1>
-    <div class="topbar">
-      <div class="left">
-        <button id="loginBtn" class="primary">Login</button>
-        <button id="logoutBtn">Logout</button>
-        <button id="clearStorageBtn" title="Clears localStorage + sessionStorage for this site.">Clear storage</button>
-        <button id="refreshBtn">Refresh</button>
-      </div>
-      <div class="right">
-        <div class="pill" id="orgPill"><strong>Org</strong>: Not connected</div>
-        <div class="pill" id="apiPill"><strong>API</strong>: —</div>
-        <div class="pill" id="authPill"><strong>Auth</strong>: Unknown</div>
-      </div>
-    </div>
-  </header>
 
-  <main>
-    <div class="card">
-      <div class="tabs">
-        <div class="tab active" id="tabDeployments" title="Recent metadata deployments (Tooling DeployRequest).">Deployments</div>
-        <div class="tab" id="tabPackages" title="Installed packages and versions (Tooling InstalledSubscriberPackage).">Packages</div>
-        <div class="tab" id="tabMetadata" title="Workbench-like inventory via Tooling API (best-effort, not full Metadata SOAP API).">Metadata inventory</div>
-      </div>
-      <div class="hint" style="margin-top:8px;">
-        Notes: GitHub Pages (browser-only) cannot reliably call the Salesforce Metadata SOAP API due to CORS. The “Metadata inventory” tab uses Tooling REST to list the most useful metadata-like objects your org exposes.
-      </div>
-    </div>
+<h1>SFDC Deployment Tracker</h1>
 
-    <div class="grid">
-      <div class="card" id="deploymentsControls">
-        <div class="row">
-          <select id="deployFilter" title="Filter deployments by status and type.">
-            <option value="all">All</option>
-            <option value="active">Active</option>
-            <option value="failed">Failed</option>
-            <option value="checkonly">Validation only</option>
-            <option value="real">Deployments only</option>
-          </select>
-          <select id="pollInterval" title="Auto-refresh interval for deployments. Set to Off to stop polling.">
-            <option value="0">Auto-refresh: Off</option>
-            <option value="10">Auto-refresh: 10s</option>
-            <option value="30" selected>Auto-refresh: 30s</option>
-            <option value="60">Auto-refresh: 60s</option>
-          </select>
-          <select id="deployLimit" title="How many DeployRequest rows to fetch.">
-            <option value="20">Limit: 20</option>
-            <option value="50">Limit: 50</option>
-            <option value="100" selected>Limit: 100</option>
-          </select>
-          <input id="deploySearch" placeholder="Search status/user/type/id…" />
-        </div>
+<div class="row">
+  <button id="loginBtn">Login</button>
+  <button id="logoutBtn">Logout</button>
+  <button id="refreshBtn">Refresh Deployments</button>
+</div>
 
-        <table>
-          <thead>
-            <tr>
-              <th title="Deployment status (Queued / InProgress / Succeeded / Failed, etc.)">Status</th>
-              <th title="User who initiated the deploy/validation.">User</th>
-              <th title="Deployment type + whether it was checkOnly (validation).">Type</th>
-              <th title="When the request was created.">Created</th>
-              <th title="When it started executing.">Started</th>
-              <th title="When it finished (if finished).">Completed</th>
-              <th title="Queue duration: Started - Created.">Queue</th>
-              <th title="Run duration: Completed - Started (or now - Started if still running).">Run</th>
-              <th title="Total duration: Completed - Created (or now - Created if still running).">Total</th>
-            </tr>
-          </thead>
-          <tbody id="deploymentsTbody">
-            <tr><td class="muted small" colspan="9">Login to load deployments.</td></tr>
-          </tbody>
-        </table>
-      </div>
+<table>
+  <thead>
+    <tr>
+      <th>Status</th>
+      <th>User</th>
+      <th>Type</th>
+      <th>Created</th>
+      <th>Started</th>
+      <th>Completed</th>
+    </tr>
+  </thead>
+  <tbody id="deploymentsTbody">
+    <tr><td colspan="6">Not loaded</td></tr>
+  </tbody>
+</table>
 
-      <div class="card">
-        <div class="row" style="justify-content:space-between;">
-          <div class="muted small">Selected / Log</div>
-        </div>
-        <pre id="logPre">Ready.</pre>
-      </div>
-    </div>
+<h3>Log</h3>
+<pre id="logPre">Ready.</pre>
 
-    <div class="card" id="packagesControls" style="display:none;">
-      <div class="row">
-        <button id="refreshPackagesBtn" class="primary">Refresh inventory</button>
-        <input id="pkgSearch" placeholder="Search package name / namespace…" />
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th title="Package display name.">Package</th>
-            <th title="Namespace prefix (managed packages).">Namespace</th>
-            <th title="Installed version (Major.Minor.Patch.Build).">Version</th>
-          </tr>
-        </thead>
-        <tbody id="packagesTbody">
-          <tr><td class="muted small" colspan="3">Login to load packages.</td></tr>
-        </tbody>
-      </table>
-    </div>
-
-    <div class="card" id="metadataControls" style="display:none;">
-      <div class="row">
-        <button id="discoverMetadataBtn" class="primary" title="Fetch list of Tooling API objects available in this org.">Discover types</button>
-        <select id="metadataTypeSelect" title="Pick a Tooling API object to list (best-effort metadata inventory)."></select>
-        <button id="fetchMetadataBtn" title="List members for the selected type.">List members</button>
-        <input id="metadataSearch" placeholder="Filter by name…" title="Client-side filter across fetched rows."/>
-      </div>
-      <div class="hint" style="margin:8px 0 10px;">
-        “Type” here means a Tooling API sObject (e.g., ApexClass, ApexTrigger, FlowDefinition, CustomObject). This approximates Workbench’s metadata listing without using Metadata SOAP.
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th title="Tooling sObject type being listed.">Type</th>
-            <th title="Best-effort member name field (Name / DeveloperName / FullName / QualifiedApiName).">Member</th>
-            <th title="When the record was last modified (if available).">Last modified</th>
-            <th title="User who last modified it (if available).">Modified by</th>
-            <th title="Record Id in the Tooling API.">Id</th>
-          </tr>
-        </thead>
-        <tbody id="metadataTbody">
-          <tr><td class="muted small" colspan="5">Click “Discover types”, then “List members”.</td></tr>
-        </tbody>
-      </table>
-    </div>
-
-  </main>
-
-  <script src="app.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
