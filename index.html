@@ -4,212 +4,175 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>SFDC Deployment Tracker (Web)</title>
-
   <style>
-    :root { color-scheme: light dark; }
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 20px; line-height: 1.35; }
-    h1 { margin: 0 0 8px; font-size: 22px; }
-    .topbar { display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin: 10px 0 14px; }
-    .pill { padding: 4px 10px; border: 1px solid #8883; border-radius: 999px; font-size: 12px; }
-    .tabs { display:flex; gap:8px; flex-wrap:wrap; margin: 10px 0; }
-    .tab { padding: 8px 10px; border-radius: 10px; border:1px solid #8883; background: transparent; cursor:pointer; }
-    .tab.active { border-color: #4c8bf599; box-shadow: 0 0 0 3px #4c8bf522; }
-    .row { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin: 10px 0; }
-    button, select, input { padding: 8px 10px; border-radius: 10px; border:1px solid #8883; background: transparent; }
-    button { cursor:pointer; }
-    input { min-width: 260px; }
-    .panel { border:1px solid #8883; border-radius: 14px; padding: 12px; margin: 10px 0; }
-    .grid { display:grid; grid-template-columns: 1.3fr 1fr; gap: 12px; }
-    @media (max-width: 980px){ .grid { grid-template-columns: 1fr; } }
-    table { width:100%; border-collapse: collapse; }
-    th, td { text-align:left; border-bottom: 1px solid #8882; padding: 8px 6px; vertical-align: top; }
-    th { font-size: 12px; opacity: 0.85; white-space: nowrap; }
-    td { font-size: 13px; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 12px; }
-    .muted { opacity: 0.7; }
-    .good { color: #1a7f37; }
-    .warn { color: #9a6700; }
-    .bad { color: #d1242f; }
-    pre { margin:0; padding: 10px; border-radius: 12px; border:1px solid #8883; overflow:auto; white-space: pre-wrap; word-break: break-word; }
-    .small { font-size: 12px; }
-    .banner { display:none; padding:10px 12px; border-radius: 12px; border:1px solid #d1242f55; background: #d1242f14; margin: 10px 0; }
-    .banner.show { display:block; }
-    .kpi { display:flex; flex-wrap:wrap; gap:8px; }
-    .kpi .pill { border-color: #8884; }
+    :root{
+      --bg:#0b0f14; --panel:#0f1620; --panel2:#0c131c; --text:#e6edf3; --muted:#9aa7b2;
+      --border:#233041; --accent:#4aa3ff; --good:#2ea043; --warn:#d29922; --bad:#f85149;
+    }
+    *{ box-sizing:border-box; }
+    body{ margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); }
+    header{ padding:16px 18px; border-bottom:1px solid var(--border); background:linear-gradient(180deg,#0c121a, #0b0f14); position:sticky; top:0; z-index:10;}
+    h1{ font-size:18px; margin:0 0 8px; font-weight:650; letter-spacing:.2px;}
+    .topbar{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between;}
+    .left, .right{ display:flex; flex-wrap:wrap; gap:8px; align-items:center;}
+    .pill{ padding:6px 10px; border:1px solid var(--border); border-radius:999px; color:var(--muted); background:rgba(255,255,255,.02); font-size:12px;}
+    .pill strong{ color:var(--text); font-weight:600;}
+    main{ padding:16px 18px; display:grid; grid-template-columns: 1fr; gap:12px;}
+    .card{ background:var(--panel); border:1px solid var(--border); border-radius:14px; padding:12px; }
+    .row{ display:flex; flex-wrap:wrap; gap:8px; align-items:center;}
+    button, select, input{ border:1px solid var(--border); background:rgba(255,255,255,.03); color:var(--text); border-radius:10px; padding:9px 10px; font-size:13px; }
+    button{ cursor:pointer; }
+    button.primary{ border-color:rgba(74,163,255,.6); }
+    button:hover{ background:rgba(255,255,255,.06); }
+    input{ min-width:260px; }
+    select{ min-width:220px; }
+    .tabs{ display:flex; gap:6px; flex-wrap:wrap; }
+    .tab{ padding:8px 10px; border-radius:12px; border:1px solid var(--border); background:rgba(255,255,255,.02); cursor:pointer; font-size:13px; color:var(--muted);}
+    .tab.active{ color:var(--text); border-color:rgba(74,163,255,.55); background:rgba(74,163,255,.08); }
+    .grid{ display:grid; grid-template-columns: 1.3fr .9fr; gap:12px; }
+    @media (max-width: 980px){ .grid{ grid-template-columns:1fr; } input{ min-width: 100%; } select{ min-width: 100%; } }
+    table{ width:100%; border-collapse:separate; border-spacing:0; overflow:hidden; border-radius:12px; border:1px solid var(--border); }
+    thead th{ text-align:left; font-size:12px; font-weight:600; color:var(--muted); background:var(--panel2); padding:10px; border-bottom:1px solid var(--border); }
+    tbody td{ padding:10px; border-bottom:1px solid rgba(35,48,65,.55); font-size:13px; vertical-align:top; }
+    tbody tr:hover td{ background:rgba(255,255,255,.02); }
+    .mono{ font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size:12px; color:var(--muted); }
+    .muted{ color:var(--muted); }
+    .status.good{ color:var(--good); }
+    .status.warn{ color:var(--warn); }
+    .status.bad{ color:var(--bad); }
+    pre{ margin:0; padding:12px; border-radius:14px; border:1px solid var(--border); background:#070a10; color:var(--text); overflow:auto; min-height:140px; white-space:pre-wrap; word-break:break-word;}
+    .small{ font-size:12px; }
+    .hint{ color:var(--muted); font-size:12px; line-height:1.45; }
   </style>
 </head>
-
 <body>
-  <h1>SFDC Deployment Tracker (Web)</h1>
-
-  <div class="topbar">
-    <button id="loginBtn" title="Start OAuth login (PKCE). You’ll be redirected to Salesforce.">Login</button>
-    <button id="logoutBtn" title="Clear stored token and stop polling.">Logout</button>
-    <button id="refreshBtn" title="Refresh data for the active tab.">Refresh</button>
-    <button id="clearStorageBtn" title="Clears local/session storage for this site, then reloads. Useful when debugging OAuth.">Clear storage</button>
-
-    <span class="pill" id="orgPill" title="Connected Salesforce instance (from token.instance_url).">Not connected</span>
-    <span class="pill" id="apiPill" title="REST API version used by this app.">—</span>
-    <span class="pill" id="authPill" title="Auth status. If you see 'Expired', click Login or let it auto-refresh.">Auth: Unknown</span>
-  </div>
-
-  <div id="authBanner" class="banner">
-    <b>Authentication problem.</b>
-    <div class="small muted" id="authBannerMsg"></div>
-    <div class="row">
-      <button id="bannerLoginBtn">Login again</button>
-      <button id="bannerLogoutBtn">Logout</button>
+  <header>
+    <h1>SFDC Deployment Tracker (Web)</h1>
+    <div class="topbar">
+      <div class="left">
+        <button id="loginBtn" class="primary">Login</button>
+        <button id="logoutBtn">Logout</button>
+        <button id="clearStorageBtn" title="Clears localStorage + sessionStorage for this site.">Clear storage</button>
+        <button id="refreshBtn">Refresh</button>
+      </div>
+      <div class="right">
+        <div class="pill" id="orgPill"><strong>Org</strong>: Not connected</div>
+        <div class="pill" id="apiPill"><strong>API</strong>: —</div>
+        <div class="pill" id="authPill"><strong>Auth</strong>: Unknown</div>
+      </div>
     </div>
-  </div>
+  </header>
 
-  <div class="tabs">
-    <button id="tabDeployments" class="tab active" title="DeployRequest (Tooling API). Shows org deployments and durations.">Deployments</button>
-    <button id="tabApexTests" class="tab" title="ApexTestRun (Tooling API). Recent test runs and correlation hints.">Apex Tests</button>
-    <button id="tabPackages" class="tab" title="InstalledSubscriberPackage (Tooling API). Installed managed packages + versions.">Metadata inventory</button>
-    <button id="tabPackageHistory" class="tab" title="Discovery-only scaffold. Lists candidate objects for package install history in your org.">Package history</button>
-    <button id="tabDeployDetails" class="tab" title="Details panel. Select a deployment row to inspect extra fields and failure hints.">Deploy details</button>
-  </div>
+  <main>
+    <div class="card">
+      <div class="tabs">
+        <div class="tab active" id="tabDeployments" title="Recent metadata deployments (Tooling DeployRequest).">Deployments</div>
+        <div class="tab" id="tabPackages" title="Installed packages and versions (Tooling InstalledSubscriberPackage).">Packages</div>
+        <div class="tab" id="tabMetadata" title="Workbench-like inventory via Tooling API (best-effort, not full Metadata SOAP API).">Metadata inventory</div>
+      </div>
+      <div class="hint" style="margin-top:8px;">
+        Notes: GitHub Pages (browser-only) cannot reliably call the Salesforce Metadata SOAP API due to CORS. The “Metadata inventory” tab uses Tooling REST to list the most useful metadata-like objects your org exposes.
+      </div>
+    </div>
 
-  <div class="grid">
-    <div class="panel">
-      <div id="deploymentsControls">
+    <div class="grid">
+      <div class="card" id="deploymentsControls">
         <div class="row">
-          <select id="deployFilter" title="Filter by deployment status/type.">
+          <select id="deployFilter" title="Filter deployments by status and type.">
             <option value="all">All</option>
-            <option value="active">Active (queued/in progress)</option>
+            <option value="active">Active</option>
             <option value="failed">Failed</option>
-            <option value="checkonly">Check-only</option>
-            <option value="real">Real deploys</option>
+            <option value="checkonly">Validation only</option>
+            <option value="real">Deployments only</option>
           </select>
-
-          <select id="deployLimit" title="How many DeployRequest records to fetch (latest first).">
-            <option value="20">20</option>
-            <option value="50" selected>50</option>
-            <option value="100">100</option>
-          </select>
-
-          <input id="deploySearch" placeholder="Search status/type/user/id/error…" title="Client-side search across visible deployment fields." />
-          <select id="pollInterval" title="Auto-refresh interval for Deployments tab. 'Off' disables polling.">
+          <select id="pollInterval" title="Auto-refresh interval for deployments. Set to Off to stop polling.">
             <option value="0">Auto-refresh: Off</option>
-            <option value="15">Auto-refresh: 15s</option>
+            <option value="10">Auto-refresh: 10s</option>
             <option value="30" selected>Auto-refresh: 30s</option>
             <option value="60">Auto-refresh: 60s</option>
           </select>
-        </div>
-
-        <div class="kpi small">
-          <span class="pill" id="kpiP50" title="Median (p50) of Total duration across currently visible rows.">p50: —</span>
-          <span class="pill" id="kpiP95" title="95th percentile (p95) of Total duration across currently visible rows.">p95: —</span>
-          <span class="pill" id="kpiBottleneck" title="Heuristic: whether time is dominated by Queue or Run across visible rows.">Bottleneck: —</span>
-        </div>
-
-        <div style="overflow:auto; margin-top:8px;">
-          <table>
-            <thead>
-              <tr>
-                <th title="DeployRequest.Status. High-level lifecycle state of the deployment.">Status</th>
-                <th title="DeployRequest.CreatedBy.Name. User who initiated the deployment/validation.">User</th>
-                <th title="DeployRequest.Type. Kind of deployment request (org-dependent).">Type</th>
-                <th title="If true, deployment ran as validation only (check-only).">CheckOnly</th>
-                <th title="CreatedDate: when the request was created.">Created</th>
-                <th title="StartDate: when Salesforce started processing the request (may be blank).">Started</th>
-                <th title="CompletedDate: when processing finished (may be blank for running).">Completed</th>
-                <th title="Queue time ≈ Started - Created. Large queue time suggests org queue / contention.">Queue</th>
-                <th title="Run time ≈ Completed - Started. Large run time suggests compilation/tests/package/DB load.">Run</th>
-                <th title="Total time ≈ Completed - Created. For running items, computed up to 'now'.">Total</th>
-                <th title="Heuristic: what most likely dominated time (Queue vs Run) for this row.">Bottleneck</th>
-                <th title="Heuristic summary of related Apex test activity in the same time window (if available).">Tests</th>
-                <th title="Open Deploy details panel for this DeployRequest.">Action</th>
-              </tr>
-            </thead>
-            <tbody id="deploymentsTbody">
-              <tr><td class="muted small" colspan="13">Not logged in.</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div id="apexTestsControls" style="display:none;">
-        <div class="row">
-          <select id="testsLimit" title="How many ApexTestRun records to fetch (latest first).">
-            <option value="50" selected>50</option>
-            <option value="100">100</option>
-            <option value="200">200</option>
+          <select id="deployLimit" title="How many DeployRequest rows to fetch.">
+            <option value="20">Limit: 20</option>
+            <option value="50">Limit: 50</option>
+            <option value="100" selected>Limit: 100</option>
           </select>
-          <input id="testsSearch" placeholder="Search outcome/status/time…" title="Client-side search over the loaded test runs." />
-          <button id="refreshTestsBtn" title="Fetch latest Apex test runs from Tooling API.">Refresh tests</button>
+          <input id="deploySearch" placeholder="Search status/user/type/id…" />
         </div>
 
-        <div style="overflow:auto;">
-          <table>
-            <thead>
-              <tr>
-                <th title="ApexTestRun.Outcome. Summary status of the run.">Outcome</th>
-                <th title="ApexTestRun.Status. Run state (Queued/Processing/Completed).">Status</th>
-                <th title="ApexTestRun.TestTime. Duration (ms) when available.">Test time</th>
-                <th title="CreatedDate.">Start</th>
-                <th title="(Not always available in ApexTestRun).">End</th>
-                <th title="Heuristic: overlaps time window of selected deployment.">Related deploy?</th>
-              </tr>
-            </thead>
-            <tbody id="testsTbody">
-              <tr><td class="muted small" colspan="6">No data loaded.</td></tr>
-            </tbody>
-          </table>
-        </div>
-
-        <div class="small muted" style="margin-top:8px;">
-          Correlation is heuristic (time overlap). Salesforce does not always expose a strict foreign key from deployments to test runs.
-        </div>
+        <table>
+          <thead>
+            <tr>
+              <th title="Deployment status (Queued / InProgress / Succeeded / Failed, etc.)">Status</th>
+              <th title="User who initiated the deploy/validation.">User</th>
+              <th title="Deployment type + whether it was checkOnly (validation).">Type</th>
+              <th title="When the request was created.">Created</th>
+              <th title="When it started executing.">Started</th>
+              <th title="When it finished (if finished).">Completed</th>
+              <th title="Queue duration: Started - Created.">Queue</th>
+              <th title="Run duration: Completed - Started (or now - Started if still running).">Run</th>
+              <th title="Total duration: Completed - Created (or now - Created if still running).">Total</th>
+            </tr>
+          </thead>
+          <tbody id="deploymentsTbody">
+            <tr><td class="muted small" colspan="9">Login to load deployments.</td></tr>
+          </tbody>
+        </table>
       </div>
 
-      <div id="packagesControls" style="display:none;">
-        <div class="row">
-          <input id="pkgSearch" placeholder="Search package name / namespace…" title="Client-side search across loaded packages." />
-          <button id="refreshPackagesBtn" title="Fetch InstalledSubscriberPackage inventory from Tooling API.">Refresh inventory</button>
+      <div class="card">
+        <div class="row" style="justify-content:space-between;">
+          <div class="muted small">Selected / Log</div>
         </div>
-
-        <div style="overflow:auto;">
-          <table>
-            <thead>
-              <tr>
-                <th title="SubscriberPackage.Name. Installed package display name.">Package</th>
-                <th title="SubscriberPackage.NamespacePrefix. Namespace of the package (managed packages).">Namespace</th>
-                <th title="SubscriberPackageVersion. Major.Minor.Patch.Build version.">Version</th>
-              </tr>
-            </thead>
-            <tbody id="packagesTbody">
-              <tr><td class="muted small" colspan="3">No data loaded.</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div id="packageHistoryControls" style="display:none;">
-        <div class="row">
-          <button id="discoverHistoryBtn" title="Lists candidate sObjects related to packages/installs in your org.">Discover objects</button>
-          <button id="refreshHistoryBtn" title="Placeholder (future): query the best candidate object for recent package install events.">Refresh history</button>
-        </div>
-        <pre id="packageHistoryPre">Package history: click Discover objects.</pre>
-      </div>
-
-      <div id="deployDetailsControls" style="display:none;">
-        <div class="row">
-          <span class="pill" title="DeployRequest.Id currently selected." id="selectedDeployId">Selected: —</span>
-          <button id="fetchDeployDetailsBtn" title="Re-fetch the selected deployment and show diagnostics.">Refresh details</button>
-        </div>
-        <pre id="deployDetailsPre">Select a deployment row (Details) to view diagnostics.</pre>
+        <pre id="logPre">Ready.</pre>
       </div>
     </div>
 
-    <div class="panel">
-      <div class="row"><span class="pill">Selected</span></div>
-      <pre id="selectedPre">Nothing selected.</pre>
-
-      <div class="row" style="margin-top:12px;"><span class="pill">Log</span></div>
-      <pre id="logPre">Ready.</pre>
+    <div class="card" id="packagesControls" style="display:none;">
+      <div class="row">
+        <button id="refreshPackagesBtn" class="primary">Refresh inventory</button>
+        <input id="pkgSearch" placeholder="Search package name / namespace…" />
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th title="Package display name.">Package</th>
+            <th title="Namespace prefix (managed packages).">Namespace</th>
+            <th title="Installed version (Major.Minor.Patch.Build).">Version</th>
+          </tr>
+        </thead>
+        <tbody id="packagesTbody">
+          <tr><td class="muted small" colspan="3">Login to load packages.</td></tr>
+        </tbody>
+      </table>
     </div>
-  </div>
+
+    <div class="card" id="metadataControls" style="display:none;">
+      <div class="row">
+        <button id="discoverMetadataBtn" class="primary" title="Fetch list of Tooling API objects available in this org.">Discover types</button>
+        <select id="metadataTypeSelect" title="Pick a Tooling API object to list (best-effort metadata inventory)."></select>
+        <button id="fetchMetadataBtn" title="List members for the selected type.">List members</button>
+        <input id="metadataSearch" placeholder="Filter by name…" title="Client-side filter across fetched rows."/>
+      </div>
+      <div class="hint" style="margin:8px 0 10px;">
+        “Type” here means a Tooling API sObject (e.g., ApexClass, ApexTrigger, FlowDefinition, CustomObject). This approximates Workbench’s metadata listing without using Metadata SOAP.
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th title="Tooling sObject type being listed.">Type</th>
+            <th title="Best-effort member name field (Name / DeveloperName / FullName / QualifiedApiName).">Member</th>
+            <th title="When the record was last modified (if available).">Last modified</th>
+            <th title="User who last modified it (if available).">Modified by</th>
+            <th title="Record Id in the Tooling API.">Id</th>
+          </tr>
+        </thead>
+        <tbody id="metadataTbody">
+          <tr><td class="muted small" colspan="5">Click “Discover types”, then “List members”.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </main>
 
   <script src="app.js"></script>
 </body>
