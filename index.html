@@ -66,7 +66,6 @@
     <button id="tabDeployments" class="tab active" title="DeployRequest (Tooling API). Shows org deployments and durations.">Deployments</button>
     <button id="tabApexTests" class="tab" title="ApexTestRun (Tooling API). Recent test runs and correlation hints.">Apex Tests</button>
     <button id="tabPackages" class="tab" title="InstalledSubscriberPackage (Tooling API). Installed managed packages + versions.">Metadata inventory</button>
-    <button id="tabCapabilities" class="tab" title="Capability matrix across REST/Tooling/Metadata API. Requires proxy for Metadata API describe.">Capabilities</button>
     <button id="tabPackageHistory" class="tab" title="Discovery-only scaffold. Lists candidate objects for package install history in your org.">Package history</button>
     <button id="tabDeployDetails" class="tab" title="Details panel. Select a deployment row to inspect extra fields and failure hints.">Deploy details</button>
   </div>
@@ -186,39 +185,7 @@
         </div>
       </div>
 
-     
-      <div id="capabilitiesControls" style="display:none;">
-        <div class="row">
-          <input id="capSearch" placeholder="Search type name…" title="Client-side search across loaded types." />
-          <button id="refreshCapsBtn" title="Build capability matrix using live API introspection.">Refresh matrix</button>
-        </div>
-
-        <div class="row">
-          <input id="proxyUrl" placeholder="Metadata proxy URL (optional)" title="Required for Metadata API describeMetadata() (Retrieve/Deploy columns)." />
-          <input id="capsLimit" style="max-width:120px;" placeholder="Max types" title="Limit number of types for REST-describe checks. Default 200." />
-        </div>
-
-        <div style="overflow:auto;">
-          <table>
-            <thead>
-              <tr>
-                <th>Metadata Type</th>
-                <th title="Queryable via standard REST /query (sObject list says queryable).">SOQL</th>
-                <th title="Queryable via Tooling API /tooling/query.">Tooling</th>
-                <th title="Present in Metadata API describeMetadata().">Metadata Retrieve</th>
-                <th title="Deployable via Metadata API (not readOnly).">Deploy</th>
-                <th title="Conservative: equals Deploy for now.">Removable</th>
-                <th title="GET /sobjects/Type/describe returns 200.">REST</th>
-              </tr>
-            </thead>
-            <tbody id="capsTbody">
-              <tr><td class="muted small" colspan="7">Click “Refresh matrix”. If you want Metadata API columns, deploy a proxy and paste its URL.</td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
-
- <div id="packageHistoryControls" style="display:none;">
+      <div id="packageHistoryControls" style="display:none;">
         <div class="row">
           <button id="discoverHistoryBtn" title="Lists candidate sObjects related to packages/installs in your org.">Discover objects</button>
           <button id="refreshHistoryBtn" title="Placeholder (future): query the best candidate object for recent package install events.">Refresh history</button>

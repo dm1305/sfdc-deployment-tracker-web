@@ -21,9 +21,6 @@ let selectedDeploy = null;
 // Used for test ↔ deployment correlation
 let cachedApexRuns = [];
 
-// Capabilities matrix cache
-let cachedCapabilities = [];
-
 /* -------------------- UI helpers -------------------- */
 function $(id) { return document.getElementById(id); }
 function setText(id, text) { const el = $(id); if (el) el.textContent = text; }
@@ -230,22 +227,19 @@ function showTab(tab) {
   const tDeploy = $("tabDeployments");
   const tTests = $("tabApexTests");
   const tPkg = $("tabPackages");
-  const tCaps = $("tabCapabilities");
   const tHist = $("tabPackageHistory");
   const tDet = $("tabDeployDetails");
 
-  [tDeploy, tTests, tPkg, tCaps, tHist, tDet].forEach((b) => b && b.classList.remove("active"));
+  [tDeploy, tTests, tPkg, tHist, tDet].forEach((b) => b && b.classList.remove("active"));
   if (tab === "deployments") tDeploy && tDeploy.classList.add("active");
   if (tab === "tests") tTests && tTests.classList.add("active");
   if (tab === "packages") tPkg && tPkg.classList.add("active");
-  if (tab === "caps") tCaps && tCaps.classList.add("active");
   if (tab === "history") tHist && tHist.classList.add("active");
   if (tab === "details") tDet && tDet.classList.add("active");
 
   setPanelVisible("deploymentsControls", tab === "deployments");
   setPanelVisible("apexTestsControls", tab === "tests");
   setPanelVisible("packagesControls", tab === "packages");
-  setPanelVisible("capabilitiesControls", tab === "caps");
   setPanelVisible("packageHistoryControls", tab === "history");
   setPanelVisible("deployDetailsControls", tab === "details");
 }
@@ -538,127 +532,6 @@ async function fetchPackages() {
   log(`Packages refreshed (${filtered.length} rows).`);
 }
 
-
-/* -------------------- Capabilities matrix -------------------- */
-function boolIcon(v) { return v ? "✔️" : "❌"; }
-
-async function listSObjects({ tooling = false } = {}) {
-  const { ok, status, json } = await sfFetch("/sobjects", { tooling });
-  if (!ok) throw new Error(`sobjects list failed (HTTP ${status})`);
-  return json?.sobjects || [];
-}
-
-async function canDescribeSObject(typeName) {
-  const { ok } = await sfFetch(`/sobjects/${encodeURIComponent(typeName)}/describe`, { tooling: false, retryOn401: true });
-  return !!ok;
-}
-
-async function fetchDescribeMetadataFromProxy(proxyUrl) {
-  const token = requireToken();
-  if (!token) throw new Error("Not logged in");
-  const url = String(proxyUrl || "").trim().replace(/\/+$/, "") + "/metadata/describe";
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ instanceUrl: token.instance_url, accessToken: token.access_token, apiVersion: API_VERSION })
-  });
-  const j = await resp.json().catch(() => null);
-  if (!resp.ok) throw new Error(j?.error || `Proxy HTTP ${resp.status}`);
-  return j;
-}
-
-function renderCapabilitiesTable(rows) {
-  const tbody = $("capsTbody");
-  if (!tbody) return;
-
-  const q = String($("capSearch")?.value || "").trim().toLowerCase();
-  const filtered = q ? rows.filter(r => String(r.typeName).toLowerCase().includes(q)) : rows;
-
-  if (!filtered.length) {
-    tbody.innerHTML = `<tr><td class="muted small" colspan="7">No types match your search.</td></tr>`;
-    return;
-  }
-
-  tbody.innerHTML = filtered.map(r => {
-    const c = r.capabilities || {};
-    return `<tr>
-      <td>${escapeHtml(r.typeName)}</td>
-      <td style="text-align:center;">${boolIcon(c.soql)}</td>
-      <td style="text-align:center;">${boolIcon(c.tooling)}</td>
-      <td style="text-align:center;">${boolIcon(c.metadataRetrieve)}</td>
-      <td style="text-align:center;">${boolIcon(c.metadataDeploy)}</td>
-      <td style="text-align:center;">${boolIcon(c.removable)}</td>
-      <td style="text-align:center;">${boolIcon(c.rest)}</td>
-    </tr>`;
-  }).join("");
-}
-
-async function refreshCapabilities() {
-  const tbody = $("capsTbody");
-  if (tbody) tbody.innerHTML = `<tr><td class="muted small" colspan="7">Loading…</td></tr>`;
-
-  try {
-    const proxyUrl = $("proxyUrl")?.value || "";
-    const limit = Number($("capsLimit")?.value || 200);
-
-    const [restObjs, toolingObjs] = await Promise.all([
-      listSObjects({ tooling: false }),
-      listSObjects({ tooling: true }),
-    ]);
-
-    const restBy = new Map(restObjs.filter(o => o?.name).map(o => [o.name, o]));
-    const toolingBy = new Map(toolingObjs.filter(o => o?.name).map(o => [o.name, o]));
-
-    const mdBy = new Map(); // xmlName -> { readOnly }
-    if (String(proxyUrl).trim()) {
-      try {
-        const md = await fetchDescribeMetadataFromProxy(proxyUrl);
-        for (const o of (md?.metadataObjects || [])) {
-          if (o?.xmlName) mdBy.set(o.xmlName, { readOnly: !!o.readOnly });
-        }
-        log(`Capabilities: describeMetadata returned ${mdBy.size} types.`);
-      } catch (e) {
-        log(`Capabilities: Metadata proxy failed (${e?.message || e}). Metadata columns will be ❌.`);
-      }
-    }
-
-    let typeNames = [];
-    if (mdBy.size) typeNames = Array.from(mdBy.keys());
-    else typeNames = Array.from(new Set([...restBy.keys(), ...toolingBy.keys()]));
-    typeNames.sort((a, b) => a.localeCompare(b));
-
-    if (Number.isFinite(limit) && limit > 0) typeNames = typeNames.slice(0, limit);
-
-    const rows = [];
-    for (const typeName of typeNames) {
-      const rest = restBy.get(typeName);
-      const tool = toolingBy.get(typeName);
-      const md = mdBy.get(typeName);
-
-      const soql = !!rest?.queryable;
-      const tooling = !!tool?.queryable;
-
-      const metadataRetrieve = !!md;
-      const metadataDeploy = !!md && md.readOnly === false;
-
-      const removable = !!metadataDeploy;
-
-      let restAccess = false;
-      try { restAccess = await canDescribeSObject(typeName); } catch { restAccess = false; }
-
-      rows.push({ typeName, capabilities: { soql, tooling, metadataRetrieve, metadataDeploy, removable, rest: restAccess } });
-    }
-
-    cachedCapabilities = rows;
-    renderCapabilitiesTable(cachedCapabilities);
-    log(`Capabilities refreshed (${rows.length} types).`);
-  } catch (e) {
-    const msg = e?.message || String(e);
-    if (tbody) tbody.innerHTML = `<tr><td class="muted small" colspan="7">Failed: ${escapeHtml(msg)}</td></tr>`;
-    log(`Capabilities refresh failed: ${msg}`);
-  }
-}
-
 /* -------------------- Package history (scaffold) -------------------- */
 async function discoverPackageHistorySources() {
   const { ok, status, json } = await sfFetch(`/sobjects/`, { tooling: false });
@@ -744,7 +617,6 @@ wireClick("bannerLogoutBtn", logout);
 wireClick("tabDeployments", () => { showTab("deployments"); refreshNow(); });
 wireClick("tabApexTests", () => { showTab("tests"); refreshNow(); });
 wireClick("tabPackages", () => { showTab("packages"); refreshNow(); });
-wireClick("tabCapabilities", () => { showTab("caps"); /* no auto-refresh to avoid heavy calls */ });
 wireClick("tabPackageHistory", () => { showTab("history"); refreshNow(); });
 wireClick("tabDeployDetails", () => { showTab("details"); refreshNow(); });
 
@@ -759,7 +631,6 @@ wireClick("refreshTestsBtn", fetchApexTests);
 
 wireInput("pkgSearch", () => fetchPackages());
 wireClick("refreshPackagesBtn", fetchPackages);
-wireClick("refreshCapsBtn", refreshCapabilities);
 
 wireClick("discoverHistoryBtn", discoverPackageHistorySources);
 wireClick("refreshHistoryBtn", () => log("History refresh not implemented yet—use Discover first."));

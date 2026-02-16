@@ -14,6 +14,11 @@
     instanceUrl: "sfdc_instance_url",
     identityUrl: "sfdc_identity_url",
     issuedAt: "sfdc_issued_at",
+    metadataProxyUrl: "sfdc_metadata_proxy_url",
+  };
+
+  const SS = {
+    clientId: "sfdc_client_id_session",
   };
 
   const state = {
@@ -80,6 +85,16 @@
 
   function getClientId() {
     return sessionStorage.getItem(SS.clientId) || localStorage.getItem(LS.clientId) || "";
+  }
+
+  function getMetadataProxyUrl() {
+    return (localStorage.getItem(LS.metadataProxyUrl) || "").trim();
+  }
+
+  function setMetadataProxyUrl(url) {
+    const v = (url || "").trim();
+    if (v) localStorage.setItem(LS.metadataProxyUrl, v);
+    else localStorage.removeItem(LS.metadataProxyUrl);
   }
 
   function getLoginHost() {
@@ -285,6 +300,8 @@
     getClientId,
     getLoginHost,
     getApiVersion,
+    getMetadataProxyUrl,
+    setMetadataProxyUrl,
     canonicalRedirectUri,
     sfFetch,
     setBanner,

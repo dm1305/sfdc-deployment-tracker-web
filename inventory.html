@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Metadata Inventory</title>
+  <title>Metadata Types</title>
   <meta name="color-scheme" content="dark light" />
   <link rel="stylesheet" href="./styles.css?v=2026-02-09.6" />
 </head>
@@ -15,7 +15,7 @@
     <!-- TOP BAR -->
     <div class="topbar">
       <div class="title">
-        <h1>Metadata Inventory</h1>
+        <h1>Metadata Types</h1>
         <div class="pills">
           <div class="pill">Org: <code id="orgPill">Not connected</code></div>
           <div class="pill">Instance: <code id="instancePill">—</code></div>
@@ -43,89 +43,27 @@
     <!-- CONTROLS -->
     <div class="controls" style="align-items:flex-start;">
       <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-        <button id="runInventoryBtn">Run inventory</button>
-        <button id="downloadCsvBtn" disabled>Download CSV</button>
+        <span class="label">Proxy URL</span>
+        <input id="proxyUrl" placeholder="https://your-worker.yourname.workers.dev" style="min-width:420px;" />
+        <button id="saveProxyBtn" class="btnSmall">Save</button>
 
-        <span class="label">Per-type limit</span>
-        <select id="invLimit" title="Max rows per type (large orgs can be slow)">
-          <option value="100">100</option>
-          <option value="250" selected>250</option>
-          <option value="500">500</option>
-          <option value="1000">1000</option>
-        </select>
+        <button id="refreshTypesBtn">Refresh types</button>
+        <span class="badge" id="busyPill">Idle</span>
 
-        <input id="textFilter" placeholder="Search in results (type/name/user/id) …" style="min-width:320px;" />
-
-        <span class="label">Changed between</span>
-        <input id="changedFrom" type="date" title="LastModifiedDate >= this date (UTC)" />
-        <span class="muted small">and</span>
-        <input id="changedTo" type="date" title="LastModifiedDate <= this date (UTC)" />
-
-        <label class="muted small" style="display:flex;gap:8px;align-items:center;">
-          <input type="checkbox" id="includeLargeTypes" checked />
-          include large types (Profile/PermissionSet etc.)
-        </label>
+        <input id="textFilter" placeholder="Search type name / dir / suffix…" style="min-width:360px;" />
+        <span class="muted small">Uses Metadata API <span class="mono">describeMetadata()</span> via your proxy worker.</span>
       </div>
-
-      <div style="display:flex; gap:14px; flex-wrap:wrap; width:100%; margin-top:10px;">
-        <!-- Type checkbox panel -->
-        <div class="card" style="flex: 1 1 520px; min-width: 360px;">
-          <div class="cardHeader">
-            <div class="h">Metadata types (Tooling objects)</div>
-            <div class="meta">
-              <span class="muted small" id="typeCountLabel">Loading types…</span>
-            </div>
-          </div>
-          <div class="cardBody">
-            <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
-              <button id="selectAllTypesBtn" class="btnSmall">Select all</button>
-              <button id="selectNoTypesBtn" class="btnSmall">Select none</button>
-              <button id="selectRecommendedBtn" class="btnSmall" title="A practical subset (code/config) for faster scans">Recommended</button>
-              <input id="typeSearch" placeholder="Filter type list…" style="min-width:240px;" />
-            </div>
-
-            <div id="typeCheckboxWrap" style="max-height:260px; overflow:auto; border:1px solid rgba(255,255,255,.10); border-radius:12px; padding:10px;">
-              <div class="muted small">Loading…</div>
-            </div>
-
-            <div class="hint" style="margin-top:10px;">
-              Default is “all types selected”. If you need speed, use “Recommended” or uncheck heavy types.
-              “Changed between” applies to <span class="mono">LastModifiedDate</span> where available.
-            </div>
-          </div>
-        </div>
-
-        <!-- Progress -->
-        <div class="card" style="flex: 1 1 360px; min-width: 320px;">
-          <div class="cardHeader">
-            <div class="h">Progress</div>
-            <div class="meta">
-              <span class="badge" id="busyPill">Idle</span>
-            </div>
-          </div>
-          <div class="cardBody">
-            <div class="muted small" id="lastRefreshed">Last run: —</div>
-            <div class="muted small" id="lastRequest">Last request: —</div>
-            <div style="height:10px;"></div>
-            <progress id="invProgress" value="0" max="100" style="width:100%;"></progress>
-            <div style="display:flex; justify-content:space-between; gap:10px; margin-top:6px;">
-              <div class="muted small" id="progressLabel">Idle</div>
-              <div class="muted small" id="progressPct">0%</div>
-            </div>
-            <div style="height:10px;"></div>
-            <pre id="logPre" class="rightPre" style="min-height:200px;">Ready.</pre>
-          </div>
-        </div>
-      </div>
+      <div style="height:10px;"></div>
+      <pre id="logPre" class="rightPre" style="min-height:120px;">Ready.</pre>
     </div>
 
     <!-- RESULTS -->
     <div class="layout" style="margin-top:14px;">
       <div class="card">
         <div class="cardHeader">
-          <div class="h">Results</div>
+          <div class="h">Metadata types</div>
           <div class="meta">
-            <span class="muted small" id="resultsCountLabel">0 rows</span>
+            <span class="muted small" id="resultsCountLabel">0 shown / 0 total</span>
           </div>
         </div>
         <div class="cardBody" style="padding:0;">
@@ -133,18 +71,15 @@
             <table>
               <thead>
                 <tr>
-                  <th>Type</th>
-                  <th>API name</th>
-                  <th>Namespace</th>
-                  <th>Last modified</th>
-                  <th>Modified by</th>
-                  <th>Created</th>
-                  <th>Created by</th>
-                  <th>Id</th>
+                  <th>xmlName</th>
+                  <th>directory</th>
+                  <th>suffix</th>
+                  <th>inFolder</th>
+                  <th>readOnly</th>
                 </tr>
               </thead>
-              <tbody id="invTbody">
-                <tr><td colspan="8" class="muted small">Not loaded.</td></tr>
+              <tbody id="typesTbody">
+                <tr><td colspan="5" class="muted small">Not loaded.</td></tr>
               </tbody>
             </table>
           </div>

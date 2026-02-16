@@ -1,6 +1,10 @@
-# SFDC Deployment Tracker (Web) — Auth fix + restored Metadata inventory
+# SFDC Deployment Tracker (Web)
 
-This bundle restores the **Metadata inventory** tab and fixes repeated `HTTP 401: Session expired or invalid` by adding automatic `refresh_token` refresh.
+This repo is a static (GitHub Pages) Salesforce “Workbench-lite”:
+
+- Deployments / package history
+- A “Capabilities” matrix (SOQL / Tooling / Metadata API / REST)
+- **Metadata Types**: lists *all* metadata types available in your org via the Metadata API `describeMetadata()` call.
 
 ## Why you were seeing those log lines
 - `... query failed (HTTP 401): Session expired or invalid`  
@@ -19,3 +23,17 @@ On any API call that returns **401**:
 ## Config reminders
 - `LOGIN_DOMAIN` must be your **My Domain**: `https://<mydomain>.my.salesforce.com`  
   (Not `salesforce-setup.com`.)
+
+## Metadata API proxy (required)
+GitHub Pages cannot call the Salesforce **Metadata SOAP API** directly because Salesforce does not allow browser CORS to the SOAP endpoints.
+
+This repo includes a Cloudflare Worker proxy under `cf-worker/worker.js`.
+
+1) Deploy the Worker in Cloudflare
+2) Confirm the Worker URL returns `OK` on a browser GET (health check)
+3) In the app, set the **Proxy URL** to that Worker base URL (example: `https://httphandler.example.workers.dev`)
+4) Go to **Metadata Types** and click **Refresh types**.
+
+If the proxy is not configured, the Metadata columns in Capabilities will show ❌ and the type list will not load.
+
+Security note: do not paste access tokens into screenshots or commits. If you accidentally did, revoke the session / rotate the Connected App secret.
