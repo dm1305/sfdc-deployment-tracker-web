@@ -1,6 +1,9 @@
 // ====== CONFIG (edit these) ======
 const CLIENT_ID = "3MVG9YFqzc_KnL.wada6.pbgp4zDPc8T6u6uR6srOVo1fS7XOD_kHsrDH_QurZzXeEgwzWBU365_xXQ54mMNn";
 const LOGIN_DOMAIN = "https://gearsetcom-4bf-dev-ed.develop.my.salesforce.com";
+
+// Cloudflare Worker proxy for Salesforce Metadata SOAP (NO trailing slash)
+const METADATA_PROXY = "https://httphandler.dmartin1305.workers.dev";
 // =================================
 
 // Storage keys
@@ -18,7 +21,7 @@ const describeCache = new Map();
 // Selection state
 let selectedDeploy = null;
 
-// Used for test ↔ deployment correlation
+// Used forAtlantic used for test ↔ deployment correlation
 let cachedApexRuns = [];
 
 /* -------------------- UI helpers -------------------- */
@@ -36,12 +39,32 @@ function saveToken(token) { localStorage.setItem(TOKEN_KEY, JSON.stringify(token
 function loadToken() { const raw = localStorage.getItem(TOKEN_KEY); return raw ? JSON.parse(raw) : null; }
 function clearToken() { localStorage.removeItem(TOKEN_KEY); }
 function clearSessionState() { sessionStorage.removeItem("pkce_verifier"); sessionStorage.removeItem("oauth_state"); }
-function redactTokenForDisplay(token) { if (!token) return token; const copy = { ...token }; if (copy.access_token) copy.access_token = "(redacted)"; if (copy.refresh_token) copy.refresh_token = "(redacted)"; if (copy.id_token) copy.id_token = "(redacted)"; return copy; }
+function redactTokenForDisplay(token) {
+  if (!token) return token;
+  const copy = { ...token };
+  if (copy.access_token) copy.access_token = "(redacted)";
+  if (copy.refresh_token) copy.refresh_token = "(redacted)";
+  if (copy.id_token) copy.id_token = "(redacted)";
+  return copy;
+}
 
 /* -------------------- PKCE helpers -------------------- */
-function base64UrlEncode(bytes) { let bin = ""; bytes.forEach((b) => (bin += String.fromCharCode(b))); return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, ""); }
-async function sha256Base64Url(text) { const data = new TextEncoder().encode(text); const digest = await crypto.subtle.digest("SHA-256", data); return base64UrlEncode(new Uint8Array(digest)); }
-function randomString(length = 64) { const bytes = new Uint8Array(length); crypto.getRandomValues(bytes); const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~"; return Array.from(bytes, (b) => chars[b % chars.length]).join(""); }
+function base64UrlEncode(bytes) {
+  let bin = "";
+  bytes.forEach((b) => (bin += String.fromCharCode(b)));
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+async function sha256Base64Url(text) {
+  const data = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return base64UrlEncode(new Uint8Array(digest));
+}
+function randomString(length = 64) {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  return Array.from(bytes, (b) => chars[b % chars.length]).join("");
+}
 function getRedirectUri() { return window.location.origin + window.location.pathname; }
 
 /* -------------------- OAuth -------------------- */
@@ -110,7 +133,12 @@ async function handleRedirectIfPresent() {
   body.set("code", code);
   body.set("code_verifier", verifier);
 
-  const resp = await fetch(tokenUrl, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body.toString() });
+  const resp = await fetch(tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
+
   const json = await resp.json().catch(() => null);
   if (!resp.ok) {
     setText("authPill", "Auth: Error");
@@ -139,9 +167,13 @@ async function refreshAccessToken() {
   body.set("client_id", CLIENT_ID);
   body.set("refresh_token", token.refresh_token);
 
-  const resp = await fetch(tokenUrl, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: body.toString() });
-  const json = await resp.json().catch(() => null);
+  const resp = await fetch(tokenUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body.toString(),
+  });
 
+  const json = await resp.json().catch(() => null);
   if (!resp.ok) return { ok: false, reason: json?.error || resp.status, detail: json?.error_description };
 
   const merged = { ...token, ...json, refresh_token: token.refresh_token };
@@ -174,16 +206,26 @@ async function logout() {
 }
 
 /* -------------------- REST helper (auto-refresh on 401) -------------------- */
-function requireToken() { const token = loadToken(); if (!token?.access_token || !token?.instance_url) return null; return token; }
+function requireToken() {
+  const token = loadToken();
+  if (!token?.access_token || !token?.instance_url) return null;
+  return token;
+}
 
 async function sfFetch(path, { tooling = false, method = "GET", headers = {}, body = null, retryOn401 = true } = {}) {
   const token = requireToken();
   if (!token) return { ok: false, status: 0, json: { message: "Not logged in" } };
 
-  const base = tooling ? `${token.instance_url}/services/data/v${API_VERSION}/tooling` : `${token.instance_url}/services/data/v${API_VERSION}`;
+  const base = tooling
+    ? `${token.instance_url}/services/data/v${API_VERSION}/tooling`
+    : `${token.instance_url}/services/data/v${API_VERSION}`;
   const url = `${base}${path}`;
 
-  const resp = await fetch(url, { method, headers: { Authorization: `Bearer ${token.access_token}`, ...headers }, body });
+  const resp = await fetch(url, {
+    method,
+    headers: { Authorization: `Bearer ${token.access_token}`, ...headers },
+    body,
+  });
 
   if (resp.status === 401 && retryOn401) {
     setText("authPill", "Auth: Expired");
@@ -205,13 +247,52 @@ async function sfFetch(path, { tooling = false, method = "GET", headers = {}, bo
   return { ok: resp.ok, status: resp.status, json };
 }
 
+/* -------------------- Metadata SOAP via Worker (describeMetadata) -------------------- */
+async function metadataDescribe() {
+  const token = requireToken();
+  if (!token) {
+    log("Not logged in.");
+    return null;
+  }
+
+  const url = `${METADATA_PROXY}/metadata/describe`;
+  const payload = {
+    instanceUrl: token.instance_url,
+    accessToken: token.access_token,
+    apiVersion: API_VERSION,
+  };
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  const text = await resp.text();
+  if (!resp.ok) {
+    log(`Metadata proxy failed (HTTP ${resp.status}). First 200 chars: ${text.slice(0, 200)}`);
+    return null;
+  }
+  return text; // SOAP XML
+}
+
+function extractMetadataTypeNamesFromDescribeXml(xmlText) {
+  const doc = new DOMParser().parseFromString(xmlText, "text/xml");
+  const xmlNameNodes = Array.from(doc.getElementsByTagName("xmlName"));
+  const names = xmlNameNodes.map(n => n.textContent).filter(Boolean);
+  return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b));
+}
+
 /* -------------------- Describe cache -------------------- */
 async function describeSObject(name, { tooling = false } = {}) {
   const key = `${tooling ? "tooling" : "rest"}:${name}`;
   if (describeCache.has(key)) return describeCache.get(key);
 
   const { ok, status, json } = await sfFetch(`/sobjects/${name}/describe`, { tooling });
-  if (!ok) { log(`Describe failed for ${name} (HTTP ${status}): ${json?.[0]?.message || json?.message || "Unknown error"}`); return null; }
+  if (!ok) {
+    log(`Describe failed for ${name} (HTTP ${status}): ${json?.[0]?.message || json?.message || "Unknown error"}`);
+    return null;
+  }
   describeCache.set(key, json);
   return json;
 }
@@ -219,8 +300,20 @@ async function describeSObject(name, { tooling = false } = {}) {
 /* -------------------- Time helpers -------------------- */
 function parseDate(s) { if (!s) return null; const d = new Date(s); return Number.isFinite(d.getTime()) ? d : null; }
 function fmtTime(d) { if (!d) return "—"; return d.toISOString().replace("T", " ").replace("Z", "Z"); }
-function fmtDuration(ms) { if (ms == null || !Number.isFinite(ms) || ms < 0) return "—"; const sec = Math.floor(ms / 1000); const h = Math.floor(sec / 3600); const m = Math.floor((sec % 3600) / 60); const s = sec % 60; return `${h}h ${m}m ${s}s`; }
-function percentile(values, p) { if (!values.length) return null; const sorted = [...values].sort((a, b) => a - b); const idx = Math.ceil((p / 100) * sorted.length) - 1; return sorted[Math.max(0, Math.min(sorted.length - 1, idx))]; }
+function fmtDuration(ms) {
+  if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
+  const sec = Math.floor(ms / 1000);
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = sec % 60;
+  return `${h}h ${m}m ${s}s`;
+}
+function percentile(values, p) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.ceil((p / 100) * sorted.length) - 1;
+  return sorted[Math.max(0, Math.min(sorted.length - 1, idx))];
+}
 
 /* -------------------- Tabs -------------------- */
 function showTab(tab) {
@@ -495,41 +588,33 @@ async function fetchApexTests() {
   if ($("tabDeployments")?.classList.contains("active")) fetchDeployments().catch(() => {});
 }
 
-/* -------------------- Packages (Metadata inventory) -------------------- */
-function pkgRowHtml(r) {
-  const pkg = r.SubscriberPackage || {};
-  const ver = r.SubscriberPackageVersion || {};
-  const version = [ver.MajorVersion, ver.MinorVersion, ver.PatchVersion, ver.BuildNumber].filter((x) => x !== null && x !== undefined).join(".");
-  return `<tr><td>${pkg.Name || "—"}</td><td class="mono">${pkg.NamespacePrefix || "—"}</td><td class="mono">${version || "—"}</td></tr>`;
-}
+/* -------------------- "Metadata inventory" tab (now lists ALL metadata TYPES) -------------------- */
+/*
+  This used to list installed managed packages (InstalledSubscriberPackage).
+  Now it calls Metadata API describeMetadata() via METADATA_PROXY and renders type names.
+*/
 async function fetchPackages() {
-  const soql = `
-    SELECT Id, SubscriberPackage.Name, SubscriberPackage.NamespacePrefix,
-           SubscriberPackageVersion.MajorVersion, SubscriberPackageVersion.MinorVersion,
-           SubscriberPackageVersion.PatchVersion, SubscriberPackageVersion.BuildNumber
-    FROM InstalledSubscriberPackage
-    ORDER BY SubscriberPackage.Name
-    LIMIT 200
-  `.trim();
-
-  const { ok, status, json } = await sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
-  if (!ok) {
-    log(`Packages query failed (HTTP ${status}): ${json?.[0]?.message || json?.message || "Unknown error"}`);
-    setText("packagesTbody", `<tr><td class="muted small" colspan="3">Packages query failed: ${json?.[0]?.message || json?.message || status}</td></tr>`);
+  const xml = await metadataDescribe();
+  if (!xml) {
+    const tbody = $("packagesTbody");
+    if (tbody) tbody.innerHTML = `<tr><td class="muted small" colspan="3">Metadata describe failed. Check Worker + proxy URL.</td></tr>`;
     return;
   }
 
-  const recs = json?.records || [];
+  const types = extractMetadataTypeNamesFromDescribeXml(xml);
+
   const q = ($("pkgSearch")?.value || "").trim().toLowerCase();
-  const filtered = !q ? recs : recs.filter((r) => (`${r.SubscriberPackage?.Name || ""} ${r.SubscriberPackage?.NamespacePrefix || ""}`).toLowerCase().includes(q));
+  const filtered = !q ? types : types.filter(t => t.toLowerCase().includes(q));
 
   const tbody = $("packagesTbody");
   if (!tbody) return;
-  tbody.innerHTML = filtered.length
-    ? filtered.map(pkgRowHtml).join("\n")
-    : `<tr><td class="muted small" colspan="3">No packages match your search.</td></tr>`;
 
-  log(`Packages refreshed (${filtered.length} rows).`);
+  // Reuse existing 3-column table: put type name in first col, leave others blank
+  tbody.innerHTML = filtered.length
+    ? filtered.map(t => `<tr><td>${t}</td><td class="mono">—</td><td class="mono">—</td></tr>`).join("\n")
+    : `<tr><td class="muted small" colspan="3">No metadata types match your search.</td></tr>`;
+
+  log(`Metadata types refreshed (${filtered.length} rows).`);
 }
 
 /* -------------------- Package history (scaffold) -------------------- */
@@ -559,7 +644,11 @@ async function fetchDeployDetails() {
   `.trim();
 
   const { ok, status, json } = await sfFetch(`/query?q=${encodeURIComponent(soql)}`, { tooling: true });
-  if (!ok) { log(`Deploy details query failed (HTTP ${status}): ${json?.[0]?.message || json?.message || "Unknown error"}`); setText("deployDetailsPre", `Deploy details query failed: ${json?.[0]?.message || json?.message || status}`); return; }
+  if (!ok) {
+    log(`Deploy details query failed (HTTP ${status}): ${json?.[0]?.message || json?.message || "Unknown error"}`);
+    setText("deployDetailsPre", `Deploy details query failed: ${json?.[0]?.message || json?.message || status}`);
+    return;
+  }
 
   const rec = (json?.records || [])[0];
   if (!rec) { setText("deployDetailsPre", "No record found for selected deployment."); return; }
@@ -585,7 +674,12 @@ async function fetchDeployDetails() {
     ].filter(Boolean),
   };
 
-  setText("deployDetailsPre", JSON.stringify({ SelectedDeployRequest: rec, Diagnosis: diagnosis, CorrelatedTests: cachedApexRuns.length ? correlateTestsToDeploy(rec) : "—" }, null, 2));
+  setText("deployDetailsPre", JSON.stringify({
+    SelectedDeployRequest: rec,
+    Diagnosis: diagnosis,
+    CorrelatedTests: cachedApexRuns.length ? correlateTestsToDeploy(rec) : "—",
+  }, null, 2));
+
   log("Deploy details refreshed.");
 }
 
@@ -597,14 +691,25 @@ async function refreshNow() {
 
   const activeTabId = document.querySelector(".tab.active")?.id;
   try {
-    if (activeTabId === "tabPackages") await fetchPackages();
+    if (activeTabId === "tabPackages") await fetchPackages(); // now metadata types
     else if (activeTabId === "tabPackageHistory") log("Package history: click Discover objects.");
     else if (activeTabId === "tabDeployDetails") await fetchDeployDetails();
     else if (activeTabId === "tabApexTests") await fetchApexTests();
     else await fetchDeployments();
-  } catch (e) { log(`Refresh error: ${e?.message || e}`); }
+  } catch (e) {
+    log(`Refresh error: ${e?.message || e}`);
+  }
 }
-function clearSession() { clearToken(); clearSessionState(); stopPolling(); setText("authPill","Auth: Cleared"); setText("orgPill","Not connected"); setText("apiPill","—"); location.reload(); }
+
+function clearSession() {
+  clearToken();
+  clearSessionState();
+  stopPolling();
+  setText("authPill","Auth: Cleared");
+  setText("orgPill","Not connected");
+  setText("apiPill","—");
+  location.reload();
+}
 
 /* -------------------- Wire up -------------------- */
 wireClick("loginBtn", login);
